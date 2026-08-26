@@ -145,6 +145,7 @@ class VisibleFloatingMenu(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
+        # The glass body.
         path = QPainterPath()
         path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipPath(path)
@@ -152,7 +153,8 @@ class VisibleFloatingMenu(QWidget):
             painter.drawImage(0, 0, self.refraction)
         painter.setClipping(False)
 
-        # Raised glass lip, but without a drawn border line.
+        # Raised effect: a very soft, offset shadow below/right and a faint
+        # highlight above/left. No border stroke, so the optical surface remains clean.
         outer = QPainterPath()
         outer.addEllipse(3, 3, self.SIZE - 6, self.SIZE - 6)
         inner = QPainterPath()
@@ -160,18 +162,16 @@ class VisibleFloatingMenu(QWidget):
         rim_path = outer.subtracted(inner)
         painter.setClipPath(rim_path)
 
-        rim_gradient = QLinearGradient(0, 0, self.SIZE, self.SIZE)
-        rim_gradient.setColorAt(0.00, QColor(255, 255, 255, 82))
-        rim_gradient.setColorAt(0.28, QColor(255, 255, 255, 34))
-        rim_gradient.setColorAt(0.52, QColor(255, 255, 255, 0))
-        rim_gradient.setColorAt(0.76, QColor(0, 0, 0, 8))
-        rim_gradient.setColorAt(1.00, QColor(0, 0, 0, 34))
-        painter.fillPath(rim_path, rim_gradient)
+        raised = QLinearGradient(0, 0, self.SIZE, self.SIZE)
+        raised.setColorAt(0.00, QColor(255, 255, 255, 58))
+        raised.setColorAt(0.25, QColor(255, 255, 255, 20))
+        raised.setColorAt(0.50, QColor(255, 255, 255, 0))
+        raised.setColorAt(0.78, QColor(0, 0, 0, 5))
+        raised.setColorAt(1.00, QColor(0, 0, 0, 20))
+        painter.fillPath(rim_path, raised)
         painter.setClipping(False)
 
-        # No explicit border/shoulder stroke.
-
-        # Lucide Menu icon: Menu is three equal horizontal strokes with rounded caps.
+        # Lucide Menu icon: three equal horizontal strokes with rounded caps.
         icon = QPen(QColor(255, 255, 255, 245))
         icon.setWidth(4)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
