@@ -13,6 +13,7 @@ class VisibleFloatingMenu(QWidget):
     REFRACTION_STRENGTH = 0.42
     EDGE_POWER = 2.4
     DYNAMIC_WAVE = 0.018
+    DISPERSION_STRENGTH = 0.085
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
 
@@ -93,21 +94,38 @@ class VisibleFloatingMenu(QWidget):
         safe_r = np.maximum(radius_px, 0.001)
         nx = dx / safe_r
         ny = dy / safe_r
-        radial_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
+        base_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
 
-        map_x = np.where(inside, xx - nx * radial_shift, xx)
-        map_y = np.where(inside, yy - ny * radial_shift, yy)
+        base_x = np.where(inside, xx - nx * base_shift, xx)
+        base_y = np.where(inside, yy - ny * base_shift, yy)
 
-        refracted = cv2.remap(
-            source,
-            map_x.astype(np.float32),
-            map_y.astype(np.float32),
-            interpolation=cv2.INTER_CUBIC,
-            borderMode=cv2.BORDER_REFLECT_101,
+        # Chromatic dispersion: each wavelength is refracted by a slightly
+        # different amount. The separation is almost invisible at the center
+        # and increases toward the curved glass edge, like a real prism/lens.
+        dispersion = self.DISPERSION_STRENGTH * np.power(r, 3.0) * (w * 0.5)
+        red_x = base_x - nx * dispersion
+        red_y = base_y - ny * dispersion
+        green_x = base_x
+        green_y = base_y
+        blue_x = base_x + nx * dispersion
+        blue_y = base_y + ny * dispersion
+
+        red = cv2.remap(
+            source[:, :, 2], red_x.astype(np.float32), red_y.astype(np.float32),
+            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
+        )
+        green = cv2.remap(
+            source[:, :, 1], green_x.astype(np.float32), green_y.astype(np.float32),
+            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
+        )
+        blue = cv2.remap(
+            source[:, :, 0], blue_x.astype(np.float32), blue_y.astype(np.float32),
+            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
         )
 
+        refracted = np.dstack((blue, green, red))
+
         # Hard circular geometry with a very soft falloff at the glass edge.
-        # This prevents the square source texture from ever becoming visible.
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0)
         circle_alpha *= inside.astype(np.float32)
 
@@ -128,8 +146,6 @@ class VisibleFloatingMenu(QWidget):
         rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0, 0, 255)
         rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0, 0, 255)
 
-        # The rim is circular and feathered. Nothing outside the circle can
-        # contribute pixels, even though the backing QImage is rectangular.
         rgba[:, :, 3] = np.clip(
             np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0
         )
@@ -144,8 +160,6 @@ class VisibleFloatingMenu(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Explicitly clip the renderer to the circular glass silhouette.
-        # This is what guarantees that no square edge/rim can leak through.
         path = QPainterPath()
         path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipPath(path)
@@ -159,7 +173,6 @@ class VisibleFloatingMenu(QWidget):
 
         painter.setClipping(False)
 
-        # No uniform outline. The optical rim above provides the edge light.
         icon = QPen(QColor(255, 255, 255, 250))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
