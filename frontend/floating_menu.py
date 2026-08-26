@@ -1,392 +1,317 @@
 import cv2
-import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QBrush, QColor
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram, QOpenGLBuffer, QOpenGLVertexArrayObject, QOpenGLTexture
+from PySide6.QtGui import QSurfaceFormat
 
 
-class FloatingMenu(QWidget):
+class FloatingMenu(QOpenGLWidget):
+    """Native Qt GPU-rendered Liquid Glass menu.
+
+    The camera frame is uploaded as a texture and the fragment shader
+    performs live radial displacement over the sampled camera image.
+    """
+
     SIZE = 96
+
+    VERTEX_SHADER = """
+        attribute vec2 position;
+        attribute vec2 texCoord;
+        varying vec2 vTexCoord;
+
+        void main()
+        {
+            vTexCoord = texCoord;
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    """
+
+    FRAGMENT_SHADER = """
+        varying vec2 vTexCoord;
+        uniform sampler2D cameraTexture;
+        uniform vec2 centerUV;
+        uniform vec2 radiusUV;
+        uniform float strength;
+        uniform float time;
+
+        // Small procedural turbulence field, inspired by the
+        // feTurbulence + feDisplacementMap approach in the reference UI.
+        float hash(vec2 p)
+        {
+            p = fract(p * vec2(123.34, 456.21));
+            p += dot(p, p + 45.32);
+            return fract(p.x * p.y);
+        }
+
+        float noise(vec2 p)
+        {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        float turbulence(vec2 p)
+        {
+            float value = 0.0;
+            float amplitude = 0.5;
+
+            for (int i = 0; i < 3; ++i)
+            {
+                value += noise(p) * amplitude;
+                p *= 2.0;
+                amplitude *= 0.5;
+            }
+
+            return value;
+        }
+
+        void main()
+        {
+            vec2 local = vTexCoord - vec2(0.5);
+            float r = length(local) * 2.0;
+
+            if (r > 1.0)
+                discard;
+
+            // Elliptical UV displacement keeps the distortion circular
+            // on screen even when the camera aspect ratio differs.
+            vec2 direction = normalize(local + vec2(0.00001));
+            float edge = smoothstep(1.0, 0.05, r);
+
+            float t = turbulence(local * 5.0 + vec2(time * 0.015));
+            float wave = (t - 0.5) * 2.0;
+
+            vec2 displacement = direction * wave * strength * edge;
+
+            // A radial lens component creates the actual glass-bending look.
+            displacement += direction * (0.035 * (1.0 - r * r));
+
+            vec2 uv = centerUV + (local * 2.0) * radiusUV + displacement * radiusUV;
+
+            vec3 refracted = texture2D(cameraTexture, uv).rgb;
+
+            // Subtle glass brightness.
+            refracted *= 1.08;
+            refracted += vec3(0.015);
+
+            // Edge highlight.
+            float rim = smoothstep(0.92, 0.72, r);
+            float innerRim = smoothstep(0.98, 0.88, r);
+            vec3 glass = refracted + vec3(0.10) * innerRim;
+
+            // Soft white tint, matching the original CSS glass aesthetic.
+            glass = mix(glass, vec3(1.0), 0.055);
+
+            gl_FragColor = vec4(glass, 0.96);
+        }
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self.setFixedSize(self.SIZE, self.SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.dragging = False
         self.drag_offset = QPoint()
 
         self.frame = None
-        self.refracted_image = None
+        self.texture = None
+        self.program = None
+        self.vbo = None
+        self.vao = None
+        self.time = 0.0
 
-        self.setAttribute(
-            Qt.WidgetAttribute.WA_TranslucentBackground
-        )
-
-        self.setCursor(
-            Qt.CursorShape.PointingHandCursor
-        )
+        self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
 
     def set_frame(self, frame):
-        """
-        Receive the current mirrored BGR camera frame.
-        """
-
-        self.frame = frame
-
+        """Store the newest mirrored BGR camera frame and schedule a GPU repaint."""
         if frame is None:
             return
 
-        self.update_refraction()
+        # Keep a compact RGB copy ready for texture upload on the GL thread.
+        self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.update()
 
-    def update_refraction(self):
-        """
-        Generate a refracted section of the live camera frame
-        corresponding to the menu's current screen position.
-        """
+    def initializeGL(self):
+        self.gl = self.context().functions()
 
+        self.gl.glEnable(self.gl.GL_BLEND)
+        self.gl.glBlendFunc(self.gl.GL_SRC_ALPHA, self.gl.GL_ONE_MINUS_SRC_ALPHA)
+
+        self.program = QOpenGLShaderProgram(self)
+        self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, self.VERTEX_SHADER)
+        self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, self.FRAGMENT_SHADER)
+        self.program.link()
+
+        # Fullscreen quad in widget coordinates.
+        vertices = [
+            -1.0, -1.0, 0.0, 1.0,
+             1.0, -1.0, 1.0, 1.0,
+            -1.0,  1.0, 0.0, 0.0,
+             1.0,  1.0, 1.0, 0.0,
+        ]
+
+        self.vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+        self.vbo.create()
+        self.vbo.bind()
+        self.vbo.allocate(vertices, len(vertices) * 4)
+
+        self.vao = QOpenGLVertexArrayObject(self)
+        self.vao.create()
+        self.vao.bind()
+
+        stride = 4 * 4
+        position_loc = self.program.attributeLocation("position")
+        tex_loc = self.program.attributeLocation("texCoord")
+
+        self.program.enableAttributeArray(position_loc)
+        self.program.setAttributeBuffer(position_loc, self.gl.GL_FLOAT, 0, 2, stride)
+        self.program.enableAttributeArray(tex_loc)
+        self.program.setAttributeBuffer(tex_loc, self.gl.GL_FLOAT, 2 * 4, 2, stride)
+
+        self.vao.release()
+        self.vbo.release()
+
+    def _upload_texture(self):
         if self.frame is None:
             return
 
-        frame = self.frame
-
-        frame_height, frame_width = frame.shape[:2]
-
-        # -------------------------------------------------
-        # Determine where the camera image is displayed
-        # inside the Canvas.
-        # -------------------------------------------------
-
-        if self.parent() is None:
-            return
-
-        canvas_width = self.parent().width()
-        canvas_height = self.parent().height()
-
-        scale = min(
-            canvas_width / frame_width,
-            canvas_height / frame_height
-        )
-
-        displayed_width = int(frame_width * scale)
-        displayed_height = int(frame_height * scale)
-
-        offset_x = (canvas_width - displayed_width) / 2
-        offset_y = (canvas_height - displayed_height) / 2
-
-        # Menu center in Canvas coordinates
-        menu_center_x = self.x() + self.SIZE / 2
-        menu_center_y = self.y() + self.SIZE / 2
-
-        # Convert Canvas coordinates → camera coordinates
-        source_center_x = (
-            menu_center_x - offset_x
-        ) / scale
-
-        source_center_y = (
-            menu_center_y - offset_y
-        ) / scale
-
-        # Size of source region required
-        source_radius = int(
-            (self.SIZE / 2) / scale
-        )
-
-        crop_size = source_radius * 2 + 8
-
-        x1 = int(source_center_x - crop_size / 2)
-        y1 = int(source_center_y - crop_size / 2)
-
-        x2 = x1 + crop_size
-        y2 = y1 + crop_size
-
-        # -------------------------------------------------
-        # Pad frame if the menu reaches an edge.
-        # -------------------------------------------------
-
-        padded = cv2.copyMakeBorder(
-            frame,
-            crop_size,
-            crop_size,
-            crop_size,
-            crop_size,
-            cv2.BORDER_REFLECT
-        )
-
-        x1 += crop_size
-        x2 += crop_size
-        y1 += crop_size
-        y2 += crop_size
-
-        crop = padded[y1:y2, x1:x2]
-
-        if crop.size == 0:
-            return
-
-        # -------------------------------------------------
-        # Resize source region to menu resolution.
-        # -------------------------------------------------
-
-        crop = cv2.resize(
-            crop,
-            (self.SIZE, self.SIZE),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        # -------------------------------------------------
-        # REAL RADIAL REFRACTION
-        # -------------------------------------------------
-
-        h, w = crop.shape[:2]
-
-        yy, xx = np.mgrid[0:h, 0:w]
-
-        cx = (w - 1) / 2
-        cy = (h - 1) / 2
-
-        dx = xx - cx
-        dy = yy - cy
-
-        radius = np.sqrt(
-            dx * dx + dy * dy
-        )
-
-        normalized_radius = radius / (w / 2)
-
-        # Glass refraction strength
-        distortion = (
-            1.0
-            + 0.16 * np.maximum(
-                0,
-                1 - normalized_radius
-            )
-        )
-
-        map_x = cx + dx / distortion
-        map_y = cy + dy / distortion
-
-        refracted = cv2.remap(
-            crop,
-            map_x.astype(np.float32),
-            map_y.astype(np.float32),
-            interpolation=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REFLECT
-        )
-
-        # -------------------------------------------------
-        # Circular mask
-        # -------------------------------------------------
-
-        mask = np.zeros(
-            (h, w),
-            dtype=np.uint8
-        )
-
-        cv2.circle(
-            mask,
-            (int(cx), int(cy)),
-            int(w / 2 - 4),
-            255,
-            -1
-        )
-
-        # Transparent outside the glass
-        bgra = cv2.cvtColor(
-            refracted,
-            cv2.COLOR_BGR2BGRA
-        )
-
-        bgra[:, :, 3] = mask
-
-        # -------------------------------------------------
-        # Convert to QImage
-        # -------------------------------------------------
-
-        bgra = np.ascontiguousarray(bgra)
-
-        self.refracted_image = QImage(
-            bgra.data,
-            w,
-            h,
-            w * 4,
-            QImage.Format.Format_ARGB32
+        image = QImage(
+            self.frame.data,
+            self.frame.shape[1],
+            self.frame.shape[0],
+            self.frame.strides[0],
+            QImage.Format.Format_RGB888,
         ).copy()
 
-        self.update()
+        if self.texture is None:
+            self.texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
+            self.texture.setMinificationFilter(QOpenGLTexture.Filter.Linear)
+            self.texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
+            self.texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+            self.texture.create()
+            self.texture.setData(image)
+        else:
+            self.texture.bind()
+            self.texture.setData(image)
+            self.texture.release()
 
-    def paintEvent(self, event):
+    def paintGL(self):
+        self.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+        self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
+
+        if self.program is None or self.frame is None:
+            self._paint_icon()
+            return
+
+        self._upload_texture()
+
+        canvas = self.parentWidget()
+        if canvas is None:
+            return
+
+        frame_h, frame_w = self.frame.shape[:2]
+        canvas_w = max(1, canvas.width())
+        canvas_h = max(1, canvas.height())
+
+        scale = min(canvas_w / frame_w, canvas_h / frame_h)
+        displayed_w = frame_w * scale
+        displayed_h = frame_h * scale
+        offset_x = (canvas_w - displayed_w) * 0.5
+        offset_y = (canvas_h - displayed_h) * 0.5
+
+        menu_cx = self.x() + self.SIZE * 0.5
+        menu_cy = self.y() + self.SIZE * 0.5
+
+        # Camera coordinates use normalized UVs. QImage is uploaded top-down,
+        # so these coordinates are deliberately expressed in screen orientation.
+        center_u = (menu_cx - offset_x) / displayed_w
+        center_v = (menu_cy - offset_y) / displayed_h
+
+        radius_u = (self.SIZE * 0.5) / displayed_w
+        radius_v = (self.SIZE * 0.5) / displayed_h
+
+        self.program.bind()
+        self.texture.bind(0)
+        self.program.setUniformValue("cameraTexture", 0)
+        self.program.setUniformValue("centerUV", center_u, center_v)
+        self.program.setUniformValue("radiusUV", radius_u, radius_v)
+        self.program.setUniformValue("strength", 0.16)
+        self.program.setUniformValue("time", self.time)
+
+        self.vao.bind()
+        self.gl.glDrawArrays(self.gl.GL_TRIANGLE_STRIP, 0, 4)
+        self.vao.release()
+
+        self.texture.release()
+        self.program.release()
+
+        self._paint_icon()
+
+        self.time += 0.016
+
+    def _paint_icon(self):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        painter.setRenderHint(
-            QPainter.RenderHint.Antialiasing
-        )
-
-        # -------------------------------------------------
-        # LIVE REFRACTED CAMERA IMAGE
-        # -------------------------------------------------
-
-        if self.refracted_image is not None:
-            painter.drawImage(
-                0,
-                0,
-                self.refracted_image
-            )
-
-        # -------------------------------------------------
-        # GLASS TINT
-        # -------------------------------------------------
-
-        painter.setBrush(
-            QBrush(
-                QColor(
-                    255,
-                    255,
-                    255,
-                    18
-                )
-            )
-        )
-
-        painter.setPen(
-            Qt.PenStyle.NoPen
-        )
-
-        painter.drawEllipse(
-            4,
-            4,
-            self.SIZE - 8,
-            self.SIZE - 8
-        )
-
-        # -------------------------------------------------
-        # GLASS OUTER EDGE
-        # -------------------------------------------------
-
-        outer_pen = QPen(
-            QColor(
-                255,
-                255,
-                255,
-                190
-            )
-        )
-
-        outer_pen.setWidth(2)
-
-        painter.setPen(outer_pen)
+        # Glass rim.
+        from PySide6.QtGui import QPen, QColor
+        pen = QPen(QColor(255, 255, 255, 190))
+        pen.setWidth(2)
+        painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
 
-        painter.drawEllipse(
-            4,
-            4,
-            self.SIZE - 8,
-            self.SIZE - 8
-        )
+        inner = QPen(QColor(255, 255, 255, 75))
+        inner.setWidth(1)
+        painter.setPen(inner)
+        painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
 
-        # -------------------------------------------------
-        # INNER EDGE
-        # -------------------------------------------------
-
-        inner_pen = QPen(
-            QColor(
-                255,
-                255,
-                255,
-                70
-            )
-        )
-
-        inner_pen.setWidth(1)
-
-        painter.setPen(inner_pen)
-
-        painter.drawEllipse(
-            7,
-            7,
-            self.SIZE - 14,
-            self.SIZE - 14
-        )
-
-        # -------------------------------------------------
-        # THREE-LINE MENU ICON
-        # -------------------------------------------------
-
-        icon_pen = QPen(
-            QColor(
-                255,
-                255,
-                255,
-                245
-            )
-        )
-
-        icon_pen.setWidth(5)
-
-        icon_pen.setCapStyle(
-            Qt.PenCapStyle.RoundCap
-        )
-
-        painter.setPen(icon_pen)
+        # Three-line menu icon.
+        icon = QPen(QColor(255, 255, 255, 245))
+        icon.setWidth(5)
+        icon.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(icon)
 
         x1 = int(self.SIZE * 0.30)
         x2 = int(self.SIZE * 0.70)
-
-        y1 = int(self.SIZE * 0.36)
-        y2 = int(self.SIZE * 0.50)
-        y3 = int(self.SIZE * 0.64)
-
-        painter.drawLine(
-            x1, y1,
-            x2, y1
-        )
-
-        painter.drawLine(
-            x1, y2,
-            x2, y2
-        )
-
-        painter.drawLine(
-            x1, y3,
-            x2, y3
-        )
+        for y in (0.36, 0.50, 0.64):
+            yy = int(self.SIZE * y)
+            painter.drawLine(x1, yy, x2, yy)
 
         painter.end()
 
-    # -----------------------------------------------------
-    # DRAGGING
-    # -----------------------------------------------------
-
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-
             self.dragging = True
-
-            self.drag_offset = (
-                event.position().toPoint()
-            )
-
+            self.drag_offset = event.position().toPoint()
             event.accept()
 
     def mouseMoveEvent(self, event):
         if self.dragging:
-
             new_position = (
                 self.pos()
                 + event.position().toPoint()
                 - self.drag_offset
             )
-
             self.move(new_position)
-
-            # Recalculate refraction immediately
-            self.update_refraction()
-
+            self.update()
             event.accept()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-
             self.dragging = False
-
             event.accept()
