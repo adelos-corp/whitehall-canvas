@@ -18,7 +18,7 @@ class VisibleFloatingMenu(QWidget):
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
     GLASS_TINT = 0.09
-    GLASS_HAZE = 0.05
+    GLASS_HAZE = 0.03
     GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
