@@ -14,6 +14,7 @@ class VisibleFloatingMenu(QWidget):
     EDGE_POWER = 2.4
     DYNAMIC_WAVE = 0.018
     DISPERSION_STRENGTH = 0.085
+    BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
 
@@ -82,8 +83,8 @@ class VisibleFloatingMenu(QWidget):
         radius_px = np.sqrt(dx * dx + dy * dy)
         radius = radius_px / (w * 0.5)
         inside = radius <= 1.0
-
         r = np.clip(radius, 0.0, 1.0)
+
         lens_curve = self.REFRACTION_STRENGTH * np.power(r, self.EDGE_POWER)
 
         phase = self.frame_index * 0.045
@@ -99,9 +100,7 @@ class VisibleFloatingMenu(QWidget):
         base_x = np.where(inside, xx - nx * base_shift, xx)
         base_y = np.where(inside, yy - ny * base_shift, yy)
 
-        # Chromatic dispersion: each wavelength is refracted by a slightly
-        # different amount. The separation is almost invisible at the center
-        # and increases toward the curved glass edge, like a real prism/lens.
+        # Chromatic dispersion increases toward the curved glass edge.
         dispersion = self.DISPERSION_STRENGTH * np.power(r, 3.0) * (w * 0.5)
         red_x = base_x - nx * dispersion
         red_y = base_y - ny * dispersion
@@ -123,29 +122,44 @@ class VisibleFloatingMenu(QWidget):
             interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
         )
 
-        refracted = np.dstack((blue, green, red))
+        refracted = np.dstack((blue, green, red)).astype(np.float32)
 
-        # Hard circular geometry with a very soft falloff at the glass edge.
+        # Bright sources need stronger spectral separation. Use luminance as a
+        # multiplier, but keep it edge-weighted so a white wall does not turn
+        # into a giant rainbow.
+        luminance = (
+            0.114 * source[:, :, 0]
+            + 0.587 * source[:, :, 1]
+            + 0.299 * source[:, :, 2]
+        ) / 255.0
+        bright = np.clip((luminance - 0.55) / 0.45, 0.0, 1.0)
+        bright_edge = bright * np.power(r, 2.2) * inside.astype(np.float32)
+        boost = 1.0 + self.BRIGHT_SOURCE_BOOST * bright_edge
+
+        # Push the separated channels slightly farther apart only where the
+        # source is genuinely bright, preserving normal-looking white surfaces.
+        red_delta = (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
+        blue_delta = (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
+        refracted[:, :, 2] = np.clip(refracted[:, :, 2] + red_delta, 0, 255)
+        refracted[:, :, 0] = np.clip(refracted[:, :, 0] + blue_delta, 0, 255)
+
+        # Circular alpha and optical rim.
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0)
         circle_alpha *= inside.astype(np.float32)
 
-        # A subtle optical rim follows the CIRCLE, not the backing square.
         rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2)
         rim *= inside.astype(np.float32)
 
-        # Specular highlight varies around the circular surface rather than
-        # drawing a uniform white border.
         light_x = np.cos(phase * 0.35) * 0.7
         light_y = np.sin(phase * 0.27) * 0.7
         radial_dot = nx * light_x + ny * light_y
         specular = np.clip((radial_dot + 1.0) * 0.5, 0.0, 1.0) * rim
         specular = np.power(specular, 7.0) * self.RIM_STRENGTH
 
-        rgba = cv2.cvtColor(refracted, cv2.COLOR_BGR2BGRA).astype(np.float32)
+        rgba = cv2.cvtColor(refracted.astype(np.uint8), cv2.COLOR_BGR2BGRA).astype(np.float32)
         rgba[:, :, 0] = np.clip(rgba[:, :, 0] + specular * 255.0, 0, 255)
         rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0, 0, 255)
         rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0, 0, 255)
-
         rgba[:, :, 3] = np.clip(
             np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0
         )
