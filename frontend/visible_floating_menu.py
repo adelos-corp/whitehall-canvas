@@ -7,10 +7,14 @@ from PySide6.QtWidgets import QWidget
 
 
 class VisibleFloatingMenu(QWidget):
-    """Native draggable glass control with live camera refraction."""
+    """Draggable circular optical lens over the live camera feed."""
 
     SIZE = 96
-    DISTORTION = 0.18
+
+    # Optical strength. Higher values make the lens visibly bend straight edges.
+    REFRACTION_STRENGTH = 0.42
+    EDGE_POWER = 2.4
+    DYNAMIC_WAVE = 0.018
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -22,21 +26,28 @@ class VisibleFloatingMenu(QWidget):
         self.drag_offset = QPoint()
         self.frame = None
         self.refraction = None
+        self.frame_index = 0
 
     def set_frame(self, frame):
+        if frame is None:
+            return
+
         self.frame = frame
+        self.frame_index += 1
         self._build_refraction()
 
     def _build_refraction(self):
-        if self.frame is None or self.parent() is None:
+        if self.frame is None or self.parentWidget() is None:
             return
 
         frame = self.frame
         fh, fw = frame.shape[:2]
-        cw = max(1, self.parent().width())
-        ch = max(1, self.parent().height())
+        canvas = self.parentWidget()
+        cw = max(1, canvas.width())
+        ch = max(1, canvas.height())
 
-        # Match the KeepAspectRatio presentation used by MainWindow.
+        # The camera is displayed with KeepAspectRatio, so reproduce exactly
+        # that mapping when finding the pixels underneath the glass.
         scale = min(cw / fw, ch / fh)
         shown_w = fw * scale
         shown_h = fh * scale
@@ -46,15 +57,16 @@ class VisibleFloatingMenu(QWidget):
         menu_cx = self.x() + self.SIZE * 0.5
         menu_cy = self.y() + self.SIZE * 0.5
 
-        src_cx = (menu_cx - offset_x) / scale
-        src_cy = (menu_cy - offset_y) / scale
-        src_radius = (self.SIZE * 0.5) / scale
+        source_cx = (menu_cx - offset_x) / scale
+        source_cy = (menu_cy - offset_y) / scale
 
-        # Grab a slightly larger source area so the lens has room to bend pixels.
-        side = max(12, int(src_radius * 2.35))
-        half = side / 2
-        x0 = int(src_cx - half)
-        y0 = int(src_cy - half)
+        # Overscan gives the optical mapping pixels to pull from at the edge.
+        source_radius = (self.SIZE * 0.5) / scale
+        side = max(32, int(source_radius * 3.0))
+        half = side * 0.5
+
+        x0 = int(source_cx - half)
+        y0 = int(source_cy - half)
 
         padded = cv2.copyMakeBorder(
             frame,
@@ -64,6 +76,7 @@ class VisibleFloatingMenu(QWidget):
             side,
             cv2.BORDER_REFLECT_101,
         )
+
         x0 += side
         y0 += side
         source = padded[y0:y0 + side, x0:x0 + side]
@@ -79,37 +92,80 @@ class VisibleFloatingMenu(QWidget):
 
         h, w = source.shape[:2]
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        cx = (w - 1) * 0.5
-        cy = (h - 1) * 0.5
+
+        cx = (w - 1.0) * 0.5
+        cy = (h - 1.0) * 0.5
         dx = xx - cx
         dy = yy - cy
-        r = np.sqrt(dx * dx + dy * dy) / (w * 0.5)
 
-        # Barrel lens distortion: pixels near the glass edge are displaced
-        # more strongly, producing a real-time refracted camera image.
-        strength = np.clip(1.0 - r, 0.0, 1.0)
-        factor = 1.0 + self.DISTORTION * strength * strength
+        radius_px = np.sqrt(dx * dx + dy * dy)
+        radius = radius_px / (w * 0.5)
+        inside = radius <= 1.0
 
-        map_x = cx + dx / factor
-        map_y = cy + dy / factor
+        # ------------------------------------------------------------
+        # Optical lens model
+        # ------------------------------------------------------------
+        # A flat overlay merely shifts pixels. A lens changes the mapping
+        # continuously as a function of distance from its optical centre.
+        # The cubic term produces increasing curvature toward the rim.
+        r = np.clip(radius, 0.0, 1.0)
+        lens_curve = self.REFRACTION_STRENGTH * np.power(r, self.EDGE_POWER)
+
+        # Small animated wave gives the glass a continuously changing
+        # refractive surface without making it look like water.
+        phase = self.frame_index * 0.045
+        wave = np.sin(
+            dx * 0.11
+            + np.cos(dy * 0.075 + phase) * 1.7
+            + phase
+        ) * self.DYNAMIC_WAVE
+
+        # Refraction is radial: the farther a ray travels through the curved
+        # surface, the more its sampling point bends toward the optical axis.
+        safe_r = np.maximum(radius_px, 0.001)
+        nx = dx / safe_r
+        ny = dy / safe_r
+
+        radial_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
+
+        map_x = xx - nx * radial_shift
+        map_y = yy - ny * radial_shift
+
+        # The centre of a lens remains almost unchanged; the rim carries the
+        # majority of the optical bending.
+        map_x = np.where(inside, map_x, xx)
+        map_y = np.where(inside, map_y, yy)
 
         refracted = cv2.remap(
             source,
-            map_x,
-            map_y,
-            cv2.INTER_LINEAR,
+            map_x.astype(np.float32),
+            map_y.astype(np.float32),
+            interpolation=cv2.INTER_CUBIC,
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
+        # ------------------------------------------------------------
+        # Glass surface / edge
+        # ------------------------------------------------------------
         rgba = cv2.cvtColor(refracted, cv2.COLOR_BGR2BGRA)
 
-        # Circular alpha mask with a soft edge.
-        yy2, xx2 = np.mgrid[0:h, 0:w].astype(np.float32)
-        distance = np.sqrt((xx2 - cx) ** 2 + (yy2 - cy) ** 2)
-        outer = w * 0.5 - 2.0
-        inner = w * 0.5 - 6.0
-        alpha = np.clip((outer - distance) / max(1.0, outer - inner), 0.0, 1.0)
-        alpha[distance <= inner] = 1.0
+        edge_start = w * 0.84
+        edge_end = w * 0.50
+        rim = np.clip(
+            (radius_px - edge_start) / max(1.0, edge_end - edge_start),
+            0.0,
+            1.0,
+        )
+        rim = np.power(rim, 1.7)
+
+        # Slight luminous glass contribution.
+        rgb = rgba[:, :, :3].astype(np.float32)
+        rgb += rim[:, :, None] * 18.0
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+        rgba[:, :, :3] = rgb
+
+        # Soft circular alpha boundary.
+        alpha = np.clip((1.0 - radius) * 14.0, 0.0, 1.0)
         rgba[:, :, 3] = (alpha * 255).astype(np.uint8)
 
         rgba = np.ascontiguousarray(rgba)
@@ -127,23 +183,22 @@ class VisibleFloatingMenu(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Live refracted camera pixels.
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
 
-        # Subtle glass tint.
-        painter.setBrush(QColor(255, 255, 255, 20))
+        # Very subtle translucent surface tint.
+        painter.setBrush(QColor(255, 255, 255, 14))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
 
-        # Bright glass rim.
-        rim = QPen(QColor(255, 255, 255, 210))
+        # Outer optical rim.
+        rim = QPen(QColor(255, 255, 255, 220))
         rim.setWidth(2)
         painter.setPen(rim)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
 
-        inner = QPen(QColor(255, 255, 255, 80))
+        inner = QPen(QColor(255, 255, 255, 75))
         inner.setWidth(1)
         painter.setPen(inner)
         painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
@@ -170,7 +225,11 @@ class VisibleFloatingMenu(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.dragging:
-            self.move(self.pos() + event.position().toPoint() - self.drag_offset)
+            self.move(
+                self.pos()
+                + event.position().toPoint()
+                - self.drag_offset
+            )
             self._build_refraction()
             event.accept()
 
