@@ -13,6 +13,7 @@ class VisibleFloatingMenu(QWidget):
     REFRACTION_STRENGTH = 0.42
     EDGE_POWER = 2.4
     DYNAMIC_WAVE = 0.018
+    CHROMATIC_DISPERSION = 2.2
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,7 +69,9 @@ class VisibleFloatingMenu(QWidget):
         if source.size == 0:
             return
 
-        source = cv2.resize(source, (self.SIZE, self.SIZE), interpolation=cv2.INTER_LINEAR)
+        source = cv2.resize(
+            source, (self.SIZE, self.SIZE), interpolation=cv2.INTER_LINEAR
+        )
 
         h, w = source.shape[:2]
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -93,19 +96,61 @@ class VisibleFloatingMenu(QWidget):
         ny = dy / safe_r
         radial_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
 
-        map_x = np.where(inside, xx - nx * radial_shift, xx)
-        map_y = np.where(inside, yy - ny * radial_shift, yy)
+        base_x = np.where(inside, xx - nx * radial_shift, xx)
+        base_y = np.where(inside, yy - ny * radial_shift, yy)
 
-        refracted = cv2.remap(
-            source,
-            map_x.astype(np.float32),
-            map_y.astype(np.float32),
+        # Chromatic dispersion: different wavelengths refract by slightly
+        # different amounts. The separation is negligible at the center and
+        # grows rapidly toward the curved glass edge, producing the familiar
+        # red/green/blue prism fringe on high-contrast edges.
+        dispersion = (
+            self.CHROMATIC_DISPERSION
+            * np.power(r, 3.2)
+            * inside.astype(np.float32)
+        )
+
+        # OpenCV stores colour as BGR. Sample the red and blue channels from
+        # opposite sides of the refracted ray, with green remaining centered.
+        red_x = base_x - nx * dispersion
+        red_y = base_y - ny * dispersion
+        blue_x = base_x + nx * dispersion
+        blue_y = base_y + ny * dispersion
+
+        base_x32 = base_x.astype(np.float32)
+        base_y32 = base_y.astype(np.float32)
+        red_x32 = red_x.astype(np.float32)
+        red_y32 = red_y.astype(np.float32)
+        blue_x32 = blue_x.astype(np.float32)
+        blue_y32 = blue_y.astype(np.float32)
+
+        green = cv2.remap(
+            source[:, :, 1],
+            base_x32,
+            base_y32,
+            interpolation=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        red = cv2.remap(
+            source[:, :, 2],
+            red_x32,
+            red_y32,
+            interpolation=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REFLECT_101,
+        )
+        blue = cv2.remap(
+            source[:, :, 0],
+            blue_x32,
+            blue_y32,
             interpolation=cv2.INTER_CUBIC,
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
+        refracted = cv2.merge((blue, green, red))
+
         rgba = cv2.cvtColor(refracted, cv2.COLOR_BGR2BGRA)
-        rgba[:, :, 3] = (np.clip((1.0 - radius) * 14.0, 0.0, 1.0) * 255).astype(np.uint8)
+        rgba[:, :, 3] = (
+            np.clip((1.0 - radius) * 14.0, 0.0, 1.0) * 255
+        ).astype(np.uint8)
 
         rgba = np.ascontiguousarray(rgba)
         self.refraction = QImage(
@@ -147,7 +192,9 @@ class VisibleFloatingMenu(QWidget):
 
     def mouseMoveEvent(self, event):
         if self.dragging:
-            self.move(self.pos() + event.position().toPoint() - self.drag_offset)
+            self.move(
+                self.pos() + event.position().toPoint() - self.drag_offset
+            )
             self._build_refraction()
             event.accept()
 
