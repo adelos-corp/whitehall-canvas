@@ -29,11 +29,11 @@ class MainWindow(QMainWindow):
 
     def update_frame(self):
         frame = self.camera.read()
-
-        # Mirror the front-facing camera so the canvas behaves like a mirror.
         frame = cv2.flip(frame, 1)
 
-        # Convert BGR -> RGB for Qt.
+        # Feed the mirrored BGR frame to the glass before RGB conversion.
+        self.canvas.menu.set_frame(frame)
+
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         height, width, channels = frame.shape
@@ -48,7 +48,6 @@ class MainWindow(QMainWindow):
         ).copy()
 
         pixmap = QPixmap.fromImage(image)
-
         scaled_pixmap = pixmap.scaled(
             self.canvas.video_label.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -65,10 +64,8 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-
     window = MainWindow()
     window.show()
-
     sys.exit(app.exec())
 
 
