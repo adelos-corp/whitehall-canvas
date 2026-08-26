@@ -17,8 +17,8 @@ class VisibleFloatingMenu(QWidget):
     BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
-    GLASS_TINT = 1.00
-    GLASS_HAZE = 0.90
+    GLASS_TINT = 0.50
+    GLASS_HAZE = 0.50
     GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
@@ -114,7 +114,7 @@ class VisibleFloatingMenu(QWidget):
         refracted[:, :, 2] = np.clip(refracted[:, :, 2] + (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
         refracted[:, :, 0] = np.clip(refracted[:, :, 0] + (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
 
-        # Experimental extreme Liquid Glass values requested by the user.
+        # Moderate Liquid Glass body and haze.
         tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6)) * inside.astype(np.float32)
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
 
