@@ -17,8 +17,8 @@ class VisibleFloatingMenu(QWidget):
     BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
-    GLASS_TINT = 0.09
-    GLASS_HAZE = 0.03
+    GLASS_TINT = 0.10
+    GLASS_HAZE = 0.00
     GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
@@ -114,14 +114,9 @@ class VisibleFloatingMenu(QWidget):
         refracted[:, :, 2] = np.clip(refracted[:, :, 2] + (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
         refracted[:, :, 0] = np.clip(refracted[:, :, 0] + (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
 
-        # Light Liquid Glass body and haze.
+        # Subtle Liquid Glass tint. Procedural haze is disabled.
         tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6)) * inside.astype(np.float32)
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
-
-        haze = (np.sin(xx * 0.38 + np.sin(yy * 0.19 + phase) * 2.0) * np.cos(yy * 0.31 - phase * 0.7))
-        haze = (haze * 0.5 + 0.5) * self.GLASS_HAZE
-        haze *= inside.astype(np.float32) * (0.35 + 0.65 * np.power(1.0 - r, 1.4))
-        refracted = refracted * (1.0 - haze[:, :, None]) + 255.0 * haze[:, :, None]
 
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0) * inside.astype(np.float32)
         rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2) * inside.astype(np.float32)
