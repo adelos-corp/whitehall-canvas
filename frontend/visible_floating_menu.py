@@ -17,8 +17,8 @@ class VisibleFloatingMenu(QWidget):
     BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
-    GLASS_TINT = 0.075
-    GLASS_HAZE = 0.055
+    GLASS_TINT = 0.055
+    GLASS_HAZE = 0.04
     GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
@@ -89,11 +89,8 @@ class VisibleFloatingMenu(QWidget):
         r = np.clip(radius, 0.0, 1.0)
 
         lens_curve = self.REFRACTION_STRENGTH * np.power(r, self.EDGE_POWER)
-
         phase = self.frame_index * 0.045
-        wave = np.sin(
-            dx * 0.11 + np.cos(dy * 0.075 + phase) * 1.7 + phase
-        ) * self.DYNAMIC_WAVE
+        wave = np.sin(dx * 0.11 + np.cos(dy * 0.075 + phase) * 1.7 + phase) * self.DYNAMIC_WAVE
 
         safe_r = np.maximum(radius_px, 0.001)
         nx = dx / safe_r
@@ -111,26 +108,13 @@ class VisibleFloatingMenu(QWidget):
         blue_x = base_x + nx * dispersion
         blue_y = base_y + ny * dispersion
 
-        red = cv2.remap(
-            source[:, :, 2], red_x.astype(np.float32), red_y.astype(np.float32),
-            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
-        )
-        green = cv2.remap(
-            source[:, :, 1], green_x.astype(np.float32), green_y.astype(np.float32),
-            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
-        )
-        blue = cv2.remap(
-            source[:, :, 0], blue_x.astype(np.float32), blue_y.astype(np.float32),
-            interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101
-        )
+        red = cv2.remap(source[:, :, 2], red_x.astype(np.float32), red_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
+        green = cv2.remap(source[:, :, 1], green_x.astype(np.float32), green_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
+        blue = cv2.remap(source[:, :, 0], blue_x.astype(np.float32), blue_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
 
         refracted = np.dstack((blue, green, red)).astype(np.float32)
 
-        luminance = (
-            0.114 * source[:, :, 0]
-            + 0.587 * source[:, :, 1]
-            + 0.299 * source[:, :, 2]
-        ) / 255.0
+        luminance = (0.114 * source[:, :, 0] + 0.587 * source[:, :, 1] + 0.299 * source[:, :, 2]) / 255.0
         bright = np.clip((luminance - 0.55) / 0.45, 0.0, 1.0)
         bright_edge = bright * np.power(r, 2.2) * inside.astype(np.float32)
         boost = 1.0 + self.BRIGHT_SOURCE_BOOST * bright_edge
@@ -140,26 +124,19 @@ class VisibleFloatingMenu(QWidget):
         refracted[:, :, 2] = np.clip(refracted[:, :, 2] + red_delta, 0, 255)
         refracted[:, :, 0] = np.clip(refracted[:, :, 0] + blue_delta, 0, 255)
 
-        # Subtle Liquid Glass body: a translucent white veil that preserves
-        # the camera image, plus microscopic haze that breaks up the perfectly
-        # clean digital surface.
+        # A light translucent veil and restrained micro-haze make the lens feel
+        # like polished Liquid Glass while keeping the camera feed dominant.
         tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6))
         tint_strength *= inside.astype(np.float32)
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
 
-        haze = (
-            np.sin(xx * 0.38 + np.sin(yy * 0.19 + phase) * 2.0)
-            * np.cos(yy * 0.31 - phase * 0.7)
-        )
+        haze = (np.sin(xx * 0.38 + np.sin(yy * 0.19 + phase) * 2.0) * np.cos(yy * 0.31 - phase * 0.7))
         haze = (haze * 0.5 + 0.5) * self.GLASS_HAZE
         haze *= inside.astype(np.float32) * (0.35 + 0.65 * np.power(1.0 - r, 1.4))
         refracted = refracted * (1.0 - haze[:, :, None]) + 255.0 * haze[:, :, None]
 
-        circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0)
-        circle_alpha *= inside.astype(np.float32)
-
-        rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2)
-        rim *= inside.astype(np.float32)
+        circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0) * inside.astype(np.float32)
+        rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2) * inside.astype(np.float32)
 
         light_x = np.cos(phase * 0.35) * 0.7
         light_y = np.sin(phase * 0.27) * 0.7
@@ -167,8 +144,6 @@ class VisibleFloatingMenu(QWidget):
         specular = np.clip((radial_dot + 1.0) * 0.5, 0.0, 1.0) * rim
         specular = np.power(specular, 7.0) * self.RIM_STRENGTH
 
-        # Broad, soft moving gloss gives the surface the slightly polished,
-        # liquid quality of modern glass UI without turning it opaque.
         gloss_center = 0.5 + 0.25 * np.sin(phase * 0.25)
         gloss = np.exp(-((xx / w - gloss_center) ** 2) / 0.025)
         gloss *= np.exp(-((yy / h - 0.32) ** 2) / 0.16)
@@ -178,44 +153,33 @@ class VisibleFloatingMenu(QWidget):
         rgba[:, :, 0] = np.clip(rgba[:, :, 0] + specular * 255.0 + gloss * 255.0, 0, 255)
         rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0 + gloss * 255.0, 0, 255)
         rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0 + gloss * 255.0, 0, 255)
-        rgba[:, :, 3] = np.clip(
-            np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0
-        )
+        rgba[:, :, 3] = np.clip(np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0)
 
         rgba = np.ascontiguousarray(rgba.astype(np.uint8))
-        self.refraction = QImage(
-            rgba.data, w, h, w * 4, QImage.Format.Format_ARGB32
-        ).copy()
+        self.refraction = QImage(rgba.data, w, h, w * 4, QImage.Format.Format_ARGB32).copy()
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         path = QPainterPath()
         path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipPath(path)
-
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
-
         painter.setBrush(QColor(255, 255, 255, 10))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
-
         painter.setClipping(False)
-
         icon = QPen(QColor(255, 255, 255, 250))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(icon)
-
         x1 = int(self.SIZE * 0.30)
         x2 = int(self.SIZE * 0.70)
         for fraction in (0.36, 0.50, 0.64):
             y = int(self.SIZE * fraction)
             painter.drawLine(x1, y, x2, y)
-
         painter.end()
 
     def mousePressEvent(self, event):
