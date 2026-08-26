@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath, QLinearGradient
 from PySide6.QtWidgets import QWidget
 
 
@@ -114,7 +114,6 @@ class VisibleFloatingMenu(QWidget):
         refracted[:, :, 2] = np.clip(refracted[:, :, 2] + (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
         refracted[:, :, 0] = np.clip(refracted[:, :, 0] + (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
 
-        # Subtle Liquid Glass tint. Procedural haze is disabled.
         tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6)) * inside.astype(np.float32)
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
 
@@ -144,15 +143,38 @@ class VisibleFloatingMenu(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
         path = QPainterPath()
         path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipPath(path)
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
-        painter.setBrush(QColor(255, 255, 255, 7))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipping(False)
+
+        # Raised glass lip: directional highlight and opposing soft shadow.
+        outer = QPainterPath()
+        outer.addEllipse(3, 3, self.SIZE - 6, self.SIZE - 6)
+        inner = QPainterPath()
+        inner.addEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
+        rim_path = outer.subtracted(inner)
+        painter.setClipPath(rim_path)
+
+        rim_gradient = QLinearGradient(0, 0, self.SIZE, self.SIZE)
+        rim_gradient.setColorAt(0.00, QColor(255, 255, 255, 82))
+        rim_gradient.setColorAt(0.28, QColor(255, 255, 255, 34))
+        rim_gradient.setColorAt(0.52, QColor(255, 255, 255, 0))
+        rim_gradient.setColorAt(0.76, QColor(0, 0, 0, 10))
+        rim_gradient.setColorAt(1.00, QColor(0, 0, 0, 42))
+        painter.fillPath(rim_path, rim_gradient)
+        painter.setClipping(False)
+
+        shoulder = QPen(QColor(255, 255, 255, 24))
+        shoulder.setWidth(2)
+        painter.setPen(shoulder)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
+
         icon = QPen(QColor(255, 255, 255, 250))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
