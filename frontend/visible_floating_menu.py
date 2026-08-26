@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath, QLinearGradient
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
 
@@ -145,6 +145,7 @@ class VisibleFloatingMenu(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
+        # Draw the live optical lens first.
         path = QPainterPath()
         path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipPath(path)
@@ -152,29 +153,25 @@ class VisibleFloatingMenu(QWidget):
             painter.drawImage(0, 0, self.refraction)
         painter.setClipping(False)
 
-        # Raised glass lip: directional highlight and opposing soft shadow.
-        outer = QPainterPath()
-        outer.addEllipse(3, 3, self.SIZE - 6, self.SIZE - 6)
-        inner = QPainterPath()
-        inner.addEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
-        rim_path = outer.subtracted(inner)
-        painter.setClipPath(rim_path)
+        # Depressed shadow around the perimeter. No rim line, no highlight stroke.
+        # The radial gradient darkens the outside shoulder and falls away smoothly
+        # toward the center, making the glass look slightly pressed into the UI.
+        shadow = QRadialGradient(
+            self.SIZE * 0.5,
+            self.SIZE * 0.5,
+            self.SIZE * 0.5
+        )
+        shadow.setColorAt(0.70, QColor(0, 0, 0, 0))
+        shadow.setColorAt(0.84, QColor(0, 0, 0, 10))
+        shadow.setColorAt(0.93, QColor(0, 0, 0, 32))
+        shadow.setColorAt(0.985, QColor(0, 0, 0, 58))
+        shadow.setColorAt(1.00, QColor(0, 0, 0, 0))
 
-        rim_gradient = QLinearGradient(0, 0, self.SIZE, self.SIZE)
-        rim_gradient.setColorAt(0.00, QColor(255, 255, 255, 82))
-        rim_gradient.setColorAt(0.28, QColor(255, 255, 255, 34))
-        rim_gradient.setColorAt(0.52, QColor(255, 255, 255, 0))
-        rim_gradient.setColorAt(0.76, QColor(0, 0, 0, 10))
-        rim_gradient.setColorAt(1.00, QColor(0, 0, 0, 42))
-        painter.fillPath(rim_path, rim_gradient)
-        painter.setClipping(False)
+        circle = QPainterPath()
+        circle.addEllipse(3, 3, self.SIZE - 6, self.SIZE - 6)
+        painter.fillPath(circle, shadow)
 
-        shoulder = QPen(QColor(255, 255, 255, 24))
-        shoulder.setWidth(2)
-        painter.setPen(shoulder)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
-
+        # Keep the menu icon clean and floating above the optical surface.
         icon = QPen(QColor(255, 255, 255, 250))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
