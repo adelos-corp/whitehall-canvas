@@ -152,7 +152,7 @@ class VisibleFloatingMenu(QWidget):
             painter.drawImage(0, 0, self.refraction)
         painter.setClipping(False)
 
-        # Raised glass lip: directional highlight and opposing soft shadow.
+        # Raised glass lip, but without a drawn border line.
         outer = QPainterPath()
         outer.addEllipse(3, 3, self.SIZE - 6, self.SIZE - 6)
         inner = QPainterPath()
@@ -169,18 +169,15 @@ class VisibleFloatingMenu(QWidget):
         painter.fillPath(rim_path, rim_gradient)
         painter.setClipping(False)
 
-        shoulder = QPen(QColor(255, 255, 255, 24))
-        shoulder.setWidth(2)
-        painter.setPen(shoulder)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
+        # No explicit border/shoulder stroke.
 
-        icon = QPen(QColor(255, 255, 255, 250))
-        icon.setWidth(5)
+        # Lucide Menu icon: Menu is three equal horizontal strokes with rounded caps.
+        icon = QPen(QColor(255, 255, 255, 245))
+        icon.setWidth(4)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(icon)
-        x1, x2 = int(self.SIZE * 0.30), int(self.SIZE * 0.70)
-        for fraction in (0.36, 0.50, 0.64):
+        x1, x2 = int(self.SIZE * 0.31), int(self.SIZE * 0.69)
+        for fraction in (0.37, 0.50, 0.63):
             y = int(self.SIZE * fraction)
             painter.drawLine(x1, y, x2, y)
         painter.end()
