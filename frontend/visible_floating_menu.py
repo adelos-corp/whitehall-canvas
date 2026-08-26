@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath, QLinearGradient
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath, QLinearGradient, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
 
@@ -20,6 +20,7 @@ class VisibleFloatingMenu(QWidget):
     GLASS_TINT = 0.13
     GLASS_HAZE = 0.00
     GLASS_GLOSS = 0.12
+    SHIMMER_STRENGTH = 0.18
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,17 +43,13 @@ class VisibleFloatingMenu(QWidget):
     def _build_refraction(self):
         if self.frame is None or self.parentWidget() is None:
             return
-
         frame = self.frame
         fh, fw = frame.shape[:2]
         canvas = self.parentWidget()
-        cw = max(1, canvas.width())
-        ch = max(1, canvas.height())
+        cw, ch = max(1, canvas.width()), max(1, canvas.height())
         scale = min(cw / fw, ch / fh)
-        shown_w = fw * scale
-        shown_h = fh * scale
-        offset_x = (cw - shown_w) * 0.5
-        offset_y = (ch - shown_h) * 0.5
+        shown_w, shown_h = fw * scale, fh * scale
+        offset_x, offset_y = (cw - shown_w) * 0.5, (ch - shown_h) * 0.5
         menu_cx = self.x() + self.SIZE * 0.5
         menu_cy = self.y() + self.SIZE * 0.5
         source_cx = (menu_cx - offset_x) / scale
@@ -60,8 +57,7 @@ class VisibleFloatingMenu(QWidget):
         source_radius = (self.SIZE * 0.5) / scale
         side = max(32, int(source_radius * 3.0))
         half = side * 0.5
-        x0 = int(source_cx - half)
-        y0 = int(source_cy - half)
+        x0, y0 = int(source_cx - half), int(source_cy - half)
         padded = cv2.copyMakeBorder(frame, side, side, side, side, cv2.BORDER_REFLECT_101)
         x0 += side
         y0 += side
@@ -71,10 +67,8 @@ class VisibleFloatingMenu(QWidget):
         source = cv2.resize(source, (self.SIZE, self.SIZE), interpolation=cv2.INTER_LINEAR)
         h, w = source.shape[:2]
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        cx = (w - 1.0) * 0.5
-        cy = (h - 1.0) * 0.5
-        dx = xx - cx
-        dy = yy - cy
+        cx, cy = (w - 1.0) * 0.5, (h - 1.0) * 0.5
+        dx, dy = xx - cx, yy - cy
         radius_px = np.sqrt(dx * dx + dy * dy)
         radius = radius_px / (w * 0.5)
         inside = radius <= 1.0
@@ -83,8 +77,7 @@ class VisibleFloatingMenu(QWidget):
         phase = self.frame_index * 0.045
         wave = np.sin(dx * 0.11 + np.cos(dy * 0.075 + phase) * 1.7 + phase) * self.DYNAMIC_WAVE
         safe_r = np.maximum(radius_px, 0.001)
-        nx = dx / safe_r
-        ny = dy / safe_r
+        nx, ny = dx / safe_r, dy / safe_r
         base_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
         base_x = np.where(inside, xx - nx * base_shift, xx)
         base_y = np.where(inside, yy - ny * base_shift, yy)
@@ -106,8 +99,7 @@ class VisibleFloatingMenu(QWidget):
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0) * inside.astype(np.float32)
         rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2) * inside.astype(np.float32)
-        light_x = np.cos(phase * 0.35) * 0.7
-        light_y = np.sin(phase * 0.27) * 0.7
+        light_x, light_y = np.cos(phase * 0.35) * 0.7, np.sin(phase * 0.27) * 0.7
         radial_dot = nx * light_x + ny * light_y
         specular = np.clip((radial_dot + 1.0) * 0.5, 0.0, 1.0) * rim
         specular = np.power(specular, 7.0) * self.RIM_STRENGTH
@@ -134,6 +126,15 @@ class VisibleFloatingMenu(QWidget):
         painter.setClipPath(path)
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
+
+        # Soft top-left light source. It follows the glass surface visually and
+        # stays low-opacity so the live refraction remains dominant.
+        shimmer = QRadialGradient(self.SIZE * 0.24, self.SIZE * 0.22, self.SIZE * 0.48)
+        shimmer.setColorAt(0.00, QColor(255, 255, 255, int(255 * self.SHIMMER_STRENGTH)))
+        shimmer.setColorAt(0.28, QColor(255, 255, 255, int(255 * self.SHIMMER_STRENGTH * 0.45)))
+        shimmer.setColorAt(0.62, QColor(255, 255, 255, int(255 * self.SHIMMER_STRENGTH * 0.10)))
+        shimmer.setColorAt(1.00, QColor(255, 255, 255, 0))
+        painter.fillRect(0, 0, self.SIZE, self.SIZE, shimmer)
         painter.setClipping(False)
 
         outer = QPainterPath()
@@ -142,7 +143,6 @@ class VisibleFloatingMenu(QWidget):
         inner.addEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
         rim_path = outer.subtracted(inner)
         painter.setClipPath(rim_path)
-
         raised = QLinearGradient(0, 0, self.SIZE, self.SIZE)
         raised.setColorAt(0.00, QColor(255, 255, 255, 58))
         raised.setColorAt(0.25, QColor(255, 255, 255, 20))
