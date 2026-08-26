@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QColor
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QPainterPath
 from PySide6.QtWidgets import QWidget
 
 
@@ -13,6 +13,8 @@ class VisibleFloatingMenu(QWidget):
     REFRACTION_STRENGTH = 0.42
     EDGE_POWER = 2.4
     DYNAMIC_WAVE = 0.018
+    RIM_WIDTH = 0.075
+    RIM_STRENGTH = 0.24
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,10 +106,35 @@ class VisibleFloatingMenu(QWidget):
             borderMode=cv2.BORDER_REFLECT_101,
         )
 
-        rgba = cv2.cvtColor(refracted, cv2.COLOR_BGR2BGRA)
-        rgba[:, :, 3] = (np.clip((1.0 - radius) * 14.0, 0.0, 1.0) * 255).astype(np.uint8)
+        # Hard circular geometry with a very soft falloff at the glass edge.
+        # This prevents the square source texture from ever becoming visible.
+        circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0)
+        circle_alpha *= inside.astype(np.float32)
 
-        rgba = np.ascontiguousarray(rgba)
+        # A subtle optical rim follows the CIRCLE, not the backing square.
+        rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2)
+        rim *= inside.astype(np.float32)
+
+        # Specular highlight varies around the circular surface rather than
+        # drawing a uniform white border.
+        light_x = np.cos(phase * 0.35) * 0.7
+        light_y = np.sin(phase * 0.27) * 0.7
+        radial_dot = nx * light_x + ny * light_y
+        specular = np.clip((radial_dot + 1.0) * 0.5, 0.0, 1.0) * rim
+        specular = np.power(specular, 7.0) * self.RIM_STRENGTH
+
+        rgba = cv2.cvtColor(refracted, cv2.COLOR_BGR2BGRA).astype(np.float32)
+        rgba[:, :, 0] = np.clip(rgba[:, :, 0] + specular * 255.0, 0, 255)
+        rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0, 0, 255)
+        rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0, 0, 255)
+
+        # The rim is circular and feathered. Nothing outside the circle can
+        # contribute pixels, even though the backing QImage is rectangular.
+        rgba[:, :, 3] = np.clip(
+            np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0
+        )
+
+        rgba = np.ascontiguousarray(rgba.astype(np.uint8))
         self.refraction = QImage(
             rgba.data, w, h, w * 4, QImage.Format.Format_ARGB32
         ).copy()
@@ -117,15 +144,22 @@ class VisibleFloatingMenu(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        # Explicitly clip the renderer to the circular glass silhouette.
+        # This is what guarantees that no square edge/rim can leak through.
+        path = QPainterPath()
+        path.addEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
+        painter.setClipPath(path)
+
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
 
-        painter.setBrush(QColor(255, 255, 255, 14))
+        painter.setBrush(QColor(255, 255, 255, 10))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
 
-        # No white outline. The glass edge is defined only by the refracted
-        # image and its soft alpha boundary.
+        painter.setClipping(False)
+
+        # No uniform outline. The optical rim above provides the edge light.
         icon = QPen(QColor(255, 255, 255, 250))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
