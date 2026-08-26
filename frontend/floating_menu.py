@@ -1,17 +1,11 @@
 import cv2
-import struct
+import numpy as np
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QImage, QPainter, QPen, QColor
 from PySide6.QtWidgets import QWidget
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtOpenGL import (
-    QOpenGLShader,
-    QOpenGLShaderProgram,
-    QOpenGLBuffer,
-    QOpenGLVertexArrayObject,
-    QOpenGLTexture,
-)
+from PySide6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram, QOpenGLBuffer, QOpenGLVertexArrayObject, QOpenGLTexture
 
 
 class FloatingMenu(QOpenGLWidget):
@@ -95,6 +89,8 @@ class FloatingMenu(QOpenGLWidget):
             vec2 uv = centerUV + (local * 2.0) * radiusUV
                     + displacement * radiusUV;
 
+            uv = clamp(uv, vec2(0.001), vec2(0.999));
+
             vec3 refracted = texture2D(cameraTexture, uv).rgb;
             refracted *= 1.08;
             refracted += vec3(0.015);
@@ -103,7 +99,7 @@ class FloatingMenu(QOpenGLWidget):
             vec3 glass = refracted + vec3(0.10) * innerRim;
             glass = mix(glass, vec3(1.0), 0.055);
 
-            gl_FragColor = vec4(glass, 0.96);
+            gl_FragColor = vec4(glass, 1.0);
         }
     """
 
@@ -111,8 +107,7 @@ class FloatingMenu(QOpenGLWidget):
         super().__init__(parent)
 
         self.setFixedSize(self.SIZE, self.SIZE)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
 
@@ -129,86 +124,81 @@ class FloatingMenu(QOpenGLWidget):
         if frame is None:
             return
 
+        # Keep the mirrored frame in RGB for direct GL texture upload.
         self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self.update()
 
     def initializeGL(self):
         self.gl = self.context().functions()
+        self.gl.glDisable(self.gl.GL_DEPTH_TEST)
         self.gl.glEnable(self.gl.GL_BLEND)
         self.gl.glBlendFunc(self.gl.GL_SRC_ALPHA, self.gl.GL_ONE_MINUS_SRC_ALPHA)
 
         self.program = QOpenGLShaderProgram(self)
-        self.program.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Vertex,
-            self.VERTEX_SHADER,
-        )
-        self.program.addShaderFromSourceCode(
-            QOpenGLShader.ShaderTypeBit.Fragment,
-            self.FRAGMENT_SHADER,
-        )
-
+        if not self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, self.VERTEX_SHADER):
+            raise RuntimeError(self.program.log())
+        if not self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, self.FRAGMENT_SHADER):
+            raise RuntimeError(self.program.log())
         if not self.program.link():
             raise RuntimeError(self.program.log())
 
-        vertices = struct.pack(
-            "16f",
+        vertices = np.array([
             -1.0, -1.0, 0.0, 1.0,
              1.0, -1.0, 1.0, 1.0,
             -1.0,  1.0, 0.0, 0.0,
              1.0,  1.0, 1.0, 0.0,
-        )
+        ], dtype=np.float32)
 
         self.vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.vbo.create()
         self.vbo.bind()
-        self.vbo.allocate(vertices)
+        self.vbo.allocate(vertices.tobytes(), vertices.nbytes)
 
         self.vao = QOpenGLVertexArrayObject(self)
         self.vao.create()
         self.vao.bind()
 
-        stride = 16
         position_loc = self.program.attributeLocation("position")
         tex_loc = self.program.attributeLocation("texCoord")
 
         self.program.enableAttributeArray(position_loc)
-        self.program.setAttributeBuffer(
-            position_loc, self.gl.GL_FLOAT, 0, 2, stride
-        )
+        self.program.setAttributeBuffer(position_loc, self.gl.GL_FLOAT, 0, 2, 16)
         self.program.enableAttributeArray(tex_loc)
-        self.program.setAttributeBuffer(
-            tex_loc, self.gl.GL_FLOAT, 8, 2, stride
-        )
+        self.program.setAttributeBuffer(tex_loc, self.gl.GL_FLOAT, 8, 2, 16)
 
         self.vao.release()
         self.vbo.release()
 
+        self.texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
+        self.texture.create()
+        self.texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+        self.texture.setMinificationFilter(QOpenGLTexture.Filter.Linear)
+        self.texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
+        self.texture.setFormat(QOpenGLTexture.TextureFormat.RGB8_UNorm)
+        self.texture.allocateStorage(QOpenGLTexture.PixelFormat.RGB, QOpenGLTexture.PixelType.UInt8)
+
     def _upload_texture(self):
-        if self.frame is None:
+        if self.frame is None or self.texture is None:
             return
 
+        h, w = self.frame.shape[:2]
         image = QImage(
             self.frame.data,
-            self.frame.shape[1],
-            self.frame.shape[0],
+            w,
+            h,
             self.frame.strides[0],
             QImage.Format.Format_RGB888,
         ).copy()
 
-        if self.texture is None:
-            self.texture = QOpenGLTexture(QOpenGLTexture.Target.Target2D)
-            self.texture.setMinificationFilter(QOpenGLTexture.Filter.Linear)
-            self.texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
-            self.texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
-            self.texture.create()
-
+        # QOpenGLTexture handles the row alignment and format conversion.
         self.texture.setData(image)
 
     def paintGL(self):
+        self.gl.glViewport(0, 0, self.width(), self.height())
         self.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
         self.gl.glClear(self.gl.GL_COLOR_BUFFER_BIT)
 
-        if self.program is None or self.frame is None:
+        if self.program is None or self.texture is None or self.frame is None:
             self._paint_icon()
             return
 
@@ -247,7 +237,6 @@ class FloatingMenu(QOpenGLWidget):
         self.vao.bind()
         self.gl.glDrawArrays(self.gl.GL_TRIANGLE_STRIP, 0, 4)
         self.vao.release()
-
         self.texture.release()
         self.program.release()
 
@@ -258,16 +247,11 @@ class FloatingMenu(QOpenGLWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        pen = QPen(QColor(255, 255, 255, 190))
+        pen = QPen(QColor(255, 255, 255, 210))
         pen.setWidth(2)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
-
-        inner = QPen(QColor(255, 255, 255, 75))
-        inner.setWidth(1)
-        painter.setPen(inner)
-        painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
 
         icon = QPen(QColor(255, 255, 255, 245))
         icon.setWidth(5)
@@ -290,12 +274,7 @@ class FloatingMenu(QOpenGLWidget):
 
     def mouseMoveEvent(self, event):
         if self.dragging:
-            new_position = (
-                self.pos()
-                + event.position().toPoint()
-                - self.drag_offset
-            )
-            self.move(new_position)
+            self.move(self.pos() + event.position().toPoint() - self.drag_offset)
             self.update()
             event.accept()
 
