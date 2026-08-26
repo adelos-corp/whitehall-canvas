@@ -3,10 +3,11 @@ import sys
 import cv2
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow
 
 from backend.camera.camera import Camera
 from frontend.canvas import Canvas
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -29,13 +30,10 @@ class MainWindow(QMainWindow):
     def update_frame(self):
         frame = self.camera.read()
 
-        # Mirror the camera
+        # Mirror the front-facing camera so the canvas behaves like a mirror.
         frame = cv2.flip(frame, 1)
 
-        #Send live frame to the glass menu
-        self.canvas.menu.set_frame(frame)
-
-        # Convert BGR → RGB
+        # Convert BGR -> RGB for Qt.
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         height, width, channels = frame.shape
