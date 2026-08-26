@@ -17,6 +17,9 @@ class VisibleFloatingMenu(QWidget):
     BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
+    GLASS_TINT = 0.075
+    GLASS_HAZE = 0.055
+    GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,7 +103,6 @@ class VisibleFloatingMenu(QWidget):
         base_x = np.where(inside, xx - nx * base_shift, xx)
         base_y = np.where(inside, yy - ny * base_shift, yy)
 
-        # Chromatic dispersion increases toward the curved glass edge.
         dispersion = self.DISPERSION_STRENGTH * np.power(r, 3.0) * (w * 0.5)
         red_x = base_x - nx * dispersion
         red_y = base_y - ny * dispersion
@@ -124,9 +126,6 @@ class VisibleFloatingMenu(QWidget):
 
         refracted = np.dstack((blue, green, red)).astype(np.float32)
 
-        # Bright sources need stronger spectral separation. Use luminance as a
-        # multiplier, but keep it edge-weighted so a white wall does not turn
-        # into a giant rainbow.
         luminance = (
             0.114 * source[:, :, 0]
             + 0.587 * source[:, :, 1]
@@ -136,14 +135,26 @@ class VisibleFloatingMenu(QWidget):
         bright_edge = bright * np.power(r, 2.2) * inside.astype(np.float32)
         boost = 1.0 + self.BRIGHT_SOURCE_BOOST * bright_edge
 
-        # Push the separated channels slightly farther apart only where the
-        # source is genuinely bright, preserving normal-looking white surfaces.
         red_delta = (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
         blue_delta = (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
         refracted[:, :, 2] = np.clip(refracted[:, :, 2] + red_delta, 0, 255)
         refracted[:, :, 0] = np.clip(refracted[:, :, 0] + blue_delta, 0, 255)
 
-        # Circular alpha and optical rim.
+        # Subtle Liquid Glass body: a translucent white veil that preserves
+        # the camera image, plus microscopic haze that breaks up the perfectly
+        # clean digital surface.
+        tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6))
+        tint_strength *= inside.astype(np.float32)
+        refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
+
+        haze = (
+            np.sin(xx * 0.38 + np.sin(yy * 0.19 + phase) * 2.0)
+            * np.cos(yy * 0.31 - phase * 0.7)
+        )
+        haze = (haze * 0.5 + 0.5) * self.GLASS_HAZE
+        haze *= inside.astype(np.float32) * (0.35 + 0.65 * np.power(1.0 - r, 1.4))
+        refracted = refracted * (1.0 - haze[:, :, None]) + 255.0 * haze[:, :, None]
+
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0)
         circle_alpha *= inside.astype(np.float32)
 
@@ -156,10 +167,17 @@ class VisibleFloatingMenu(QWidget):
         specular = np.clip((radial_dot + 1.0) * 0.5, 0.0, 1.0) * rim
         specular = np.power(specular, 7.0) * self.RIM_STRENGTH
 
+        # Broad, soft moving gloss gives the surface the slightly polished,
+        # liquid quality of modern glass UI without turning it opaque.
+        gloss_center = 0.5 + 0.25 * np.sin(phase * 0.25)
+        gloss = np.exp(-((xx / w - gloss_center) ** 2) / 0.025)
+        gloss *= np.exp(-((yy / h - 0.32) ** 2) / 0.16)
+        gloss *= self.GLASS_GLOSS * inside.astype(np.float32)
+
         rgba = cv2.cvtColor(refracted.astype(np.uint8), cv2.COLOR_BGR2BGRA).astype(np.float32)
-        rgba[:, :, 0] = np.clip(rgba[:, :, 0] + specular * 255.0, 0, 255)
-        rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0, 0, 255)
-        rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0, 0, 255)
+        rgba[:, :, 0] = np.clip(rgba[:, :, 0] + specular * 255.0 + gloss * 255.0, 0, 255)
+        rgba[:, :, 1] = np.clip(rgba[:, :, 1] + specular * 255.0 + gloss * 255.0, 0, 255)
+        rgba[:, :, 2] = np.clip(rgba[:, :, 2] + specular * 255.0 + gloss * 255.0, 0, 255)
         rgba[:, :, 3] = np.clip(
             np.maximum(circle_alpha, rim * 0.52) * 255.0, 0.0, 255.0
         )
