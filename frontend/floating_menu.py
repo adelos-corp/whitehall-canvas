@@ -1,19 +1,21 @@
 import cv2
+import struct
 
 from PySide6.QtCore import Qt, QPoint
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QImage, QPainter, QPen, QColor
 from PySide6.QtWidgets import QWidget
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
-from PySide6.QtOpenGL import QOpenGLShader, QOpenGLShaderProgram, QOpenGLBuffer, QOpenGLVertexArrayObject, QOpenGLTexture
-from PySide6.QtGui import QSurfaceFormat
+from PySide6.QtOpenGL import (
+    QOpenGLShader,
+    QOpenGLShaderProgram,
+    QOpenGLBuffer,
+    QOpenGLVertexArrayObject,
+    QOpenGLTexture,
+)
 
 
 class FloatingMenu(QOpenGLWidget):
-    """Native Qt GPU-rendered Liquid Glass menu.
-
-    The camera frame is uploaded as a texture and the fragment shader
-    performs live radial displacement over the sampled camera image.
-    """
+    """Native Qt GPU-rendered Liquid Glass menu."""
 
     SIZE = 96
 
@@ -37,8 +39,6 @@ class FloatingMenu(QOpenGLWidget):
         uniform float strength;
         uniform float time;
 
-        // Small procedural turbulence field, inspired by the
-        // feTurbulence + feDisplacementMap approach in the reference UI.
         float hash(vec2 p)
         {
             p = fract(p * vec2(123.34, 456.21));
@@ -83,8 +83,6 @@ class FloatingMenu(QOpenGLWidget):
             if (r > 1.0)
                 discard;
 
-            // Elliptical UV displacement keeps the distortion circular
-            // on screen even when the camera aspect ratio differs.
             vec2 direction = normalize(local + vec2(0.00001));
             float edge = smoothstep(1.0, 0.05, r);
 
@@ -92,24 +90,17 @@ class FloatingMenu(QOpenGLWidget):
             float wave = (t - 0.5) * 2.0;
 
             vec2 displacement = direction * wave * strength * edge;
-
-            // A radial lens component creates the actual glass-bending look.
             displacement += direction * (0.035 * (1.0 - r * r));
 
-            vec2 uv = centerUV + (local * 2.0) * radiusUV + displacement * radiusUV;
+            vec2 uv = centerUV + (local * 2.0) * radiusUV
+                    + displacement * radiusUV;
 
             vec3 refracted = texture2D(cameraTexture, uv).rgb;
-
-            // Subtle glass brightness.
             refracted *= 1.08;
             refracted += vec3(0.015);
 
-            // Edge highlight.
-            float rim = smoothstep(0.92, 0.72, r);
             float innerRim = smoothstep(0.98, 0.88, r);
             vec3 glass = refracted + vec3(0.10) * innerRim;
-
-            // Soft white tint, matching the original CSS glass aesthetic.
             glass = mix(glass, vec3(1.0), 0.055);
 
             gl_FragColor = vec4(glass, 0.96);
@@ -123,10 +114,10 @@ class FloatingMenu(QOpenGLWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
 
         self.dragging = False
         self.drag_offset = QPoint()
-
         self.frame = None
         self.texture = None
         self.program = None
@@ -134,53 +125,60 @@ class FloatingMenu(QOpenGLWidget):
         self.vao = None
         self.time = 0.0
 
-        self.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
-
     def set_frame(self, frame):
-        """Store the newest mirrored BGR camera frame and schedule a GPU repaint."""
         if frame is None:
             return
 
-        # Keep a compact RGB copy ready for texture upload on the GL thread.
         self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         self.update()
 
     def initializeGL(self):
         self.gl = self.context().functions()
-
         self.gl.glEnable(self.gl.GL_BLEND)
         self.gl.glBlendFunc(self.gl.GL_SRC_ALPHA, self.gl.GL_ONE_MINUS_SRC_ALPHA)
 
         self.program = QOpenGLShaderProgram(self)
-        self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Vertex, self.VERTEX_SHADER)
-        self.program.addShaderFromSourceCode(QOpenGLShader.ShaderTypeBit.Fragment, self.FRAGMENT_SHADER)
-        self.program.link()
+        self.program.addShaderFromSourceCode(
+            QOpenGLShader.ShaderTypeBit.Vertex,
+            self.VERTEX_SHADER,
+        )
+        self.program.addShaderFromSourceCode(
+            QOpenGLShader.ShaderTypeBit.Fragment,
+            self.FRAGMENT_SHADER,
+        )
 
-        # Fullscreen quad in widget coordinates.
-        vertices = [
+        if not self.program.link():
+            raise RuntimeError(self.program.log())
+
+        vertices = struct.pack(
+            "16f",
             -1.0, -1.0, 0.0, 1.0,
              1.0, -1.0, 1.0, 1.0,
             -1.0,  1.0, 0.0, 0.0,
              1.0,  1.0, 1.0, 0.0,
-        ]
+        )
 
         self.vbo = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
         self.vbo.create()
         self.vbo.bind()
-        self.vbo.allocate(vertices, len(vertices) * 4)
+        self.vbo.allocate(vertices)
 
         self.vao = QOpenGLVertexArrayObject(self)
         self.vao.create()
         self.vao.bind()
 
-        stride = 4 * 4
+        stride = 16
         position_loc = self.program.attributeLocation("position")
         tex_loc = self.program.attributeLocation("texCoord")
 
         self.program.enableAttributeArray(position_loc)
-        self.program.setAttributeBuffer(position_loc, self.gl.GL_FLOAT, 0, 2, stride)
+        self.program.setAttributeBuffer(
+            position_loc, self.gl.GL_FLOAT, 0, 2, stride
+        )
         self.program.enableAttributeArray(tex_loc)
-        self.program.setAttributeBuffer(tex_loc, self.gl.GL_FLOAT, 2 * 4, 2, stride)
+        self.program.setAttributeBuffer(
+            tex_loc, self.gl.GL_FLOAT, 8, 2, stride
+        )
 
         self.vao.release()
         self.vbo.release()
@@ -203,11 +201,8 @@ class FloatingMenu(QOpenGLWidget):
             self.texture.setMagnificationFilter(QOpenGLTexture.Filter.Linear)
             self.texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
             self.texture.create()
-            self.texture.setData(image)
-        else:
-            self.texture.bind()
-            self.texture.setData(image)
-            self.texture.release()
+
+        self.texture.setData(image)
 
     def paintGL(self):
         self.gl.glClearColor(0.0, 0.0, 0.0, 0.0)
@@ -236,21 +231,18 @@ class FloatingMenu(QOpenGLWidget):
         menu_cx = self.x() + self.SIZE * 0.5
         menu_cy = self.y() + self.SIZE * 0.5
 
-        # Camera coordinates use normalized UVs. QImage is uploaded top-down,
-        # so these coordinates are deliberately expressed in screen orientation.
         center_u = (menu_cx - offset_x) / displayed_w
         center_v = (menu_cy - offset_y) / displayed_h
-
         radius_u = (self.SIZE * 0.5) / displayed_w
         radius_v = (self.SIZE * 0.5) / displayed_h
 
         self.program.bind()
         self.texture.bind(0)
         self.program.setUniformValue("cameraTexture", 0)
-        self.program.setUniformValue("centerUV", center_u, center_v)
-        self.program.setUniformValue("radiusUV", radius_u, radius_v)
+        self.program.setUniformValue("centerUV", float(center_u), float(center_v))
+        self.program.setUniformValue("radiusUV", float(radius_u), float(radius_v))
         self.program.setUniformValue("strength", 0.16)
-        self.program.setUniformValue("time", self.time)
+        self.program.setUniformValue("time", float(self.time))
 
         self.vao.bind()
         self.gl.glDrawArrays(self.gl.GL_TRIANGLE_STRIP, 0, 4)
@@ -260,15 +252,12 @@ class FloatingMenu(QOpenGLWidget):
         self.program.release()
 
         self._paint_icon()
-
         self.time += 0.016
 
     def _paint_icon(self):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Glass rim.
-        from PySide6.QtGui import QPen, QColor
         pen = QPen(QColor(255, 255, 255, 190))
         pen.setWidth(2)
         painter.setPen(pen)
@@ -280,7 +269,6 @@ class FloatingMenu(QOpenGLWidget):
         painter.setPen(inner)
         painter.drawEllipse(7, 7, self.SIZE - 14, self.SIZE - 14)
 
-        # Three-line menu icon.
         icon = QPen(QColor(255, 255, 255, 245))
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
