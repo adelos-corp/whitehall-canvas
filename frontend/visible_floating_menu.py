@@ -17,8 +17,8 @@ class VisibleFloatingMenu(QWidget):
     BRIGHT_SOURCE_BOOST = 1.8
     RIM_WIDTH = 0.075
     RIM_STRENGTH = 0.24
-    GLASS_TINT = 0.055
-    GLASS_HAZE = 0.04
+    GLASS_TINT = 0.03
+    GLASS_HAZE = 0.02
     GLASS_GLOSS = 0.12
 
     def __init__(self, parent=None):
@@ -66,9 +66,7 @@ class VisibleFloatingMenu(QWidget):
         x0 = int(source_cx - half)
         y0 = int(source_cy - half)
 
-        padded = cv2.copyMakeBorder(
-            frame, side, side, side, side, cv2.BORDER_REFLECT_101
-        )
+        padded = cv2.copyMakeBorder(frame, side, side, side, side, cv2.BORDER_REFLECT_101)
         x0 += side
         y0 += side
         source = padded[y0:y0 + side, x0:x0 + side]
@@ -96,38 +94,28 @@ class VisibleFloatingMenu(QWidget):
         nx = dx / safe_r
         ny = dy / safe_r
         base_shift = (lens_curve + wave * (1.0 - r)) * (w * 0.5)
-
         base_x = np.where(inside, xx - nx * base_shift, xx)
         base_y = np.where(inside, yy - ny * base_shift, yy)
 
         dispersion = self.DISPERSION_STRENGTH * np.power(r, 3.0) * (w * 0.5)
-        red_x = base_x - nx * dispersion
-        red_y = base_y - ny * dispersion
-        green_x = base_x
-        green_y = base_y
-        blue_x = base_x + nx * dispersion
-        blue_y = base_y + ny * dispersion
+        red_x, red_y = base_x - nx * dispersion, base_y - ny * dispersion
+        green_x, green_y = base_x, base_y
+        blue_x, blue_y = base_x + nx * dispersion, base_y + ny * dispersion
 
         red = cv2.remap(source[:, :, 2], red_x.astype(np.float32), red_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
         green = cv2.remap(source[:, :, 1], green_x.astype(np.float32), green_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
         blue = cv2.remap(source[:, :, 0], blue_x.astype(np.float32), blue_y.astype(np.float32), interpolation=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT_101)
-
         refracted = np.dstack((blue, green, red)).astype(np.float32)
 
         luminance = (0.114 * source[:, :, 0] + 0.587 * source[:, :, 1] + 0.299 * source[:, :, 2]) / 255.0
         bright = np.clip((luminance - 0.55) / 0.45, 0.0, 1.0)
         bright_edge = bright * np.power(r, 2.2) * inside.astype(np.float32)
         boost = 1.0 + self.BRIGHT_SOURCE_BOOST * bright_edge
+        refracted[:, :, 2] = np.clip(refracted[:, :, 2] + (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
+        refracted[:, :, 0] = np.clip(refracted[:, :, 0] + (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0), 0, 255)
 
-        red_delta = (red.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
-        blue_delta = (blue.astype(np.float32) - green.astype(np.float32)) * (boost - 1.0)
-        refracted[:, :, 2] = np.clip(refracted[:, :, 2] + red_delta, 0, 255)
-        refracted[:, :, 0] = np.clip(refracted[:, :, 0] + blue_delta, 0, 255)
-
-        # A light translucent veil and restrained micro-haze make the lens feel
-        # like polished Liquid Glass while keeping the camera feed dominant.
-        tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6))
-        tint_strength *= inside.astype(np.float32)
+        # Very light glass body: the camera remains dominant and the surface reads as translucent rather than frosted.
+        tint_strength = self.GLASS_TINT * (0.35 + 0.65 * np.power(1.0 - r, 1.6)) * inside.astype(np.float32)
         refracted = refracted * (1.0 - tint_strength[:, :, None]) + 255.0 * tint_strength[:, :, None]
 
         haze = (np.sin(xx * 0.38 + np.sin(yy * 0.19 + phase) * 2.0) * np.cos(yy * 0.31 - phase * 0.7))
@@ -137,7 +125,6 @@ class VisibleFloatingMenu(QWidget):
 
         circle_alpha = np.clip((1.0 - radius) / 0.035, 0.0, 1.0) * inside.astype(np.float32)
         rim = np.exp(-((1.0 - r) / self.RIM_WIDTH) ** 2) * inside.astype(np.float32)
-
         light_x = np.cos(phase * 0.35) * 0.7
         light_y = np.sin(phase * 0.27) * 0.7
         radial_dot = nx * light_x + ny * light_y
@@ -167,7 +154,7 @@ class VisibleFloatingMenu(QWidget):
         painter.setClipPath(path)
         if self.refraction is not None:
             painter.drawImage(0, 0, self.refraction)
-        painter.setBrush(QColor(255, 255, 255, 10))
+        painter.setBrush(QColor(255, 255, 255, 7))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(4, 4, self.SIZE - 8, self.SIZE - 8)
         painter.setClipping(False)
@@ -175,8 +162,7 @@ class VisibleFloatingMenu(QWidget):
         icon.setWidth(5)
         icon.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(icon)
-        x1 = int(self.SIZE * 0.30)
-        x2 = int(self.SIZE * 0.70)
+        x1, x2 = int(self.SIZE * 0.30), int(self.SIZE * 0.70)
         for fraction in (0.36, 0.50, 0.64):
             y = int(self.SIZE * fraction)
             painter.drawLine(x1, y, x2, y)
