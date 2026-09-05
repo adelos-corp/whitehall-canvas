@@ -1,13 +1,12 @@
 import cv2
-import mediapipe as mp
+from mediapipe.python.solutions import hands as mp_hands
 
 
 class HandGestureDetector:
     """Detect whether the visible hand is open or closed (fist)."""
 
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
+        self.hands = mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
             model_complexity=1,
