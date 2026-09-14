@@ -2,6 +2,7 @@ import os
 import urllib.request
 
 import cv2
+import numpy as np
 import mediapipe as mp
 
 BaseOptions = mp.tasks.BaseOptions
@@ -50,7 +51,7 @@ class HandGestureDetector:
 
     def is_fist(self, frame_bgr):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb = cv2.ascontiguousarray(rgb)
+        rgb = np.ascontiguousarray(rgb)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.detector.detect(mp_image)
 
