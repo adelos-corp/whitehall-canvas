@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
             self.countdown_label.show()
         else:
             self.countdown_label.hide()
+            self.countdown_label.deleteLater()
 
     def update_frame(self):
         frame = self.camera.read()
@@ -62,7 +63,8 @@ class MainWindow(QMainWindow):
             self._update_countdown_label()
 
         # Keep the existing Liquid Glass button untouched.
-        self.canvas.menu.set_frame(frame)
+        # Menu button temporarily hidden for the demo flow.
+        self.canvas.menu.hide()
 
         # Establish the clean background for the first ~1.5 seconds.
         # Step out of frame while Whitehall captures the scene.
