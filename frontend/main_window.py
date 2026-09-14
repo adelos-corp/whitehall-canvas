@@ -12,7 +12,6 @@ from frontend.canvas import Canvas
 
 
 class MainWindow(QMainWindow):
-    BACKGROUND_CAPTURE_FRAMES = 90
     COUNTDOWN_SECONDS = 6
 
     def __init__(self):
@@ -24,7 +23,7 @@ class MainWindow(QMainWindow):
         self.camera.start()
         self.gesture = HandGestureDetector()
         self.invisibility = InvisibilityEffect()
-        self.capture_count = 0
+        self.background_captured = False
         self.fist_frames = 0
         self.open_frames = 0
         self.invisible = False
@@ -65,11 +64,14 @@ class MainWindow(QMainWindow):
         # Menu button temporarily hidden for the demo flow.
         self.canvas.menu.hide()
 
-        # Establish the clean background for the first ~1.5 seconds.
-        # Step out of frame while Whitehall captures the scene.
-        if not self.invisibility.ready():
-            self.capture_count += 1
+        # During the six-second startup countdown, continuously refresh the
+        # background snapshot. The final frame captured before the countdown
+        # ends becomes the clean scene for the invisibility effect.
+        if not self.background_captured:
+            elapsed_ms = self.countdown_timer.elapsed()
             self.invisibility.capture_background(frame)
+            if elapsed_ms >= self.COUNTDOWN_SECONDS * 1000:
+                self.background_captured = True
 
         # DEBUG: show hand detection and fist state only. Do not trigger invisibility.
         hand_box, fist, l_shape, hand_found = self.gesture.detect_hand_state(frame)
@@ -101,7 +103,7 @@ class MainWindow(QMainWindow):
         elif self.open_frames >= 3:
             self.invisible = False
 
-        if self.capture_count < self.BACKGROUND_CAPTURE_FRAMES:
+        if not self.background_captured:
             self.invisible = False
 
         output = frame
