@@ -49,25 +49,6 @@ class HandGestureDetector:
         mcp_distance = cls._distance(landmarks[mcp], wrist)
         return tip_distance > pip_distance * 1.08 and tip_distance > mcp_distance * 1.18
 
-    def detect_hand_box(self, frame_bgr):
-        """Return the pixel bounding box of the first detected hand, or None."""
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb = np.ascontiguousarray(rgb)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = self.detector.detect(mp_image)
-        if not result.hand_landmarks:
-            return None
-        landmarks = result.hand_landmarks[0]
-        h, w = frame_bgr.shape[:2]
-        xs = [int(lm.x * w) for lm in landmarks]
-        ys = [int(lm.y * h) for lm in landmarks]
-        pad = max(12, int(min(w, h) * 0.025))
-        x1 = max(0, min(xs) - pad)
-        y1 = max(0, min(ys) - pad)
-        x2 = min(w - 1, max(xs) + pad)
-        y2 = min(h - 1, max(ys) + pad)
-        return x1, y1, x2, y2
-
     def is_fist(self, frame_bgr):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb = np.ascontiguousarray(rgb)
