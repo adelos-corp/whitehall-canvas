@@ -27,6 +27,8 @@ class MainWindow(QMainWindow):
         self.fist_frames = 0
         self.open_frames = 0
         self.invisible = False
+        self.locked_hand_center = None
+        self.hand_lost_frames = 0
         self.countdown_timer = QElapsedTimer()
         self.countdown_timer.start()
 
@@ -74,7 +76,15 @@ class MainWindow(QMainWindow):
                 self.background_captured = True
 
         # DEBUG: show hand detection and fist state only. Do not trigger invisibility.
-        hand_box, fist, l_shape, hand_found = self.gesture.detect_hand_state(frame)
+        hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
+        if hand_found:
+            self.locked_hand_center = selected_center
+            self.hand_lost_frames = 0
+        elif self.background_captured:
+            self.hand_lost_frames += 1
+            if self.hand_lost_frames > 30:
+                self.locked_hand_center = None
+                self.hand_lost_frames = 0
         if hand_box is not None:
             x1, y1, x2, y2 = hand_box
             if l_shape:
