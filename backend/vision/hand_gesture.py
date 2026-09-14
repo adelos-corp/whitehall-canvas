@@ -89,15 +89,35 @@ class HandGestureDetector:
                     for mcp, pip, tip in fingers]
 
         wrist = landmarks[0]
+
+        # Thumb extension is judged relative to the index MCP and thumb
+        # direction, rather than wrist distance alone. This is more stable
+        # when the hand is rotated or the thumb is partially foreshortened.
+        thumb_tip = landmarks[4]
+        thumb_ip = landmarks[3]
+        index_mcp = landmarks[5]
         thumb_extended = (
-            self._distance(landmarks[4], wrist)
-            > self._distance(landmarks[3], wrist) * 1.08
+            self._distance(thumb_tip, wrist) > self._distance(thumb_ip, wrist) * 1.10
+            and self._distance(thumb_tip, index_mcp) > self._distance(thumb_ip, index_mcp) * 1.12
         )
 
-        extended_count = sum(extended)
-        is_fist = extended_count <= 1 and not thumb_extended
-        is_l_shape = (thumb_extended and extended[0]
-                      and not extended[1] and not extended[2] and not extended[3])
+        # Require the index finger to be decisively extended for L.
+        index_extended = extended[0]
+        other_fingers_curled = sum(extended[1:]) == 0
+
+        # A fist requires all four fingers to be confidently curled.
+        # This prevents a partially detected/occluded finger from immediately
+        # flipping the state to fist.
+        curled_count = 4 - sum(extended)
+        is_fist = curled_count >= 4 and not thumb_extended
+
+        # L gets priority only when its geometry is unambiguous.
+        is_l_shape = (
+            thumb_extended
+            and index_extended
+            and other_fingers_curled
+        )
+
         return box, is_fist, is_l_shape, True
 
     def is_fist(self, frame_bgr):
