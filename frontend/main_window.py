@@ -77,7 +77,16 @@ class MainWindow(QMainWindow):
 
         hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
         if l_shape:
-            self.close()
+            # Show the orange L state for one rendered frame before exiting.
+            if hand_box is not None:
+                x1, y1, x2, y2 = hand_box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 3)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channels = rgb.shape
+            image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
+            pixmap = QPixmap.fromImage(image).scaled(self.canvas.video_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.canvas.video_label.setPixmap(pixmap)
+            QTimer.singleShot(350, self.close)
             return
         if hand_found:
             self.locked_hand_center = selected_center
