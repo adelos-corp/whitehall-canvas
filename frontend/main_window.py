@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
         if not self.background_captured:
             self.invisible = False
 
-        output = frame
+        output = self.invisibility.apply(frame, self.invisible) if self.background_captured else frame
         rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         bytes_per_line = channels * width
