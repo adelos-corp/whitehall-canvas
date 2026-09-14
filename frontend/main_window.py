@@ -72,11 +72,15 @@ class MainWindow(QMainWindow):
             self.invisibility.capture_background(frame)
 
         # DEBUG: show hand detection and fist state only. Do not trigger invisibility.
-        hand_box = self.gesture.detect_hand_box(frame)
-        fist, hand_found = self.gesture.is_fist(frame)
+        hand_box, fist, l_shape, hand_found = self.gesture.detect_hand_state(frame)
         if hand_box is not None:
             x1, y1, x2, y2 = hand_box
-            box_color = (0, 0, 255) if fist else (0, 255, 0)
+            if l_shape:
+                box_color = (0, 165, 255)  # Orange
+            elif fist:
+                box_color = (0, 0, 255)    # Red
+            else:
+                box_color = (0, 255, 0)    # Green
             cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 3)
         fist = False if not hand_found else fist
 
