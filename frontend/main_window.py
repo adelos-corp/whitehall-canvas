@@ -1,7 +1,7 @@
 import sys
 
 import cv2
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QElapsedTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
@@ -28,13 +28,14 @@ class MainWindow(QMainWindow):
         self.fist_frames = 0
         self.open_frames = 0
         self.invisible = False
-        self.countdown_frames = self.COUNTDOWN_SECONDS * 60
+        self.countdown_timer = QElapsedTimer()
+        self.countdown_timer.start()
 
         self.countdown_label = QLabel(self.canvas)
         self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.countdown_label.setStyleSheet("color: white; background: transparent;")
-        self.countdown_label.setFont(QFont("Bodoni MT Condensed", 28))
-        self.countdown_label.setGeometry(0, 35, self.canvas.width(), 55)
+        self.countdown_label.setFont(QFont("SF Pro Display", 44, QFont.Weight.Bold))
+        self.countdown_label.setGeometry(0, 50, self.width(), 70)
         self.countdown_label.raise_()
         self._update_countdown_label()
 
@@ -44,8 +45,10 @@ class MainWindow(QMainWindow):
         self.showFullScreen()
 
     def _update_countdown_label(self):
-        seconds = max(0, (self.countdown_frames + 59) // 60)
-        if seconds > 0:
+        elapsed_ms = self.countdown_timer.elapsed()
+        remaining_ms = max(0, self.COUNTDOWN_SECONDS * 1000 - elapsed_ms)
+        seconds = (remaining_ms + 999) // 1000
+        if remaining_ms > 0:
             self.countdown_label.setText(f"Please wait {seconds} seconds before entering the frame.")
             self.countdown_label.show()
         else:
@@ -55,8 +58,7 @@ class MainWindow(QMainWindow):
         frame = self.camera.read()
         frame = cv2.flip(frame, 1)
 
-        if self.countdown_frames > 0:
-            self.countdown_frames -= 1
+        if self.countdown_timer.isValid() and self.countdown_timer.elapsed() <= self.COUNTDOWN_SECONDS * 1000:
             self._update_countdown_label()
 
         # Keep the existing Liquid Glass button untouched.
