@@ -64,32 +64,44 @@ class HandGestureDetector:
         pad = max(12, int(min(w, h) * 0.025))
         return (max(0, min(xs)-pad), max(0, min(ys)-pad), min(w-1, max(xs)+pad), min(h-1, max(ys)+pad))
 
-    def is_fist(self, frame_bgr):
+    def _detect_landmarks(self, frame_bgr):
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb = np.ascontiguousarray(rgb)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.detector.detect(mp_image)
+        return result.hand_landmarks[0] if result.hand_landmarks else None
 
-        if not result.hand_landmarks:
-            return False, False
+    def detect_hand_state(self, frame_bgr):
+        """Return (box, is_fist, is_l_shape, hand_found) from one detection."""
+        landmarks = self._detect_landmarks(frame_bgr)
+        if landmarks is None:
+            return None, False, False, False
 
-        landmarks = result.hand_landmarks[0]
+        h, w = frame_bgr.shape[:2]
+        xs = [int(lm.x * w) for lm in landmarks]
+        ys = [int(lm.y * h) for lm in landmarks]
+        pad = max(12, int(min(w, h) * 0.025))
+        box = (max(0, min(xs) - pad), max(0, min(ys) - pad),
+               min(w - 1, max(xs) + pad), min(h - 1, max(ys) + pad))
 
-        # Index, middle, ring and pinky. Thumb is deliberately ignored because
-        # its orientation varies too much between natural fist poses.
-        fingers = (
-            (5, 6, 8),
-            (9, 10, 12),
-            (13, 14, 16),
-            (17, 18, 20),
+        fingers = ((5, 6, 8), (9, 10, 12), (13, 14, 16), (17, 18, 20))
+        extended = [self._finger_is_extended(landmarks, mcp, pip, tip)
+                    for mcp, pip, tip in fingers]
+
+        wrist = landmarks[0]
+        thumb_extended = (
+            self._distance(landmarks[4], wrist)
+            > self._distance(landmarks[3], wrist) * 1.08
         )
-        extended_count = sum(
-            self._finger_is_extended(landmarks, mcp, pip, tip)
-            for mcp, pip, tip in fingers
-        )
 
-        # 0-1 extended fingers = fist; 2+ = open/not-a-fist.
-        return extended_count <= 1, True
+        extended_count = sum(extended)
+        is_fist = extended_count <= 1 and not thumb_extended
+        is_l_shape = (thumb_extended and extended[0]
+                      and not extended[1] and not extended[2] and not extended[3])
+        return box, is_fist, is_l_shape, True
 
+    def is_fist(self, frame_bgr):
+        _, is_fist, _, hand_found = self.detect_hand_state(frame_bgr)
+        return is_fist, hand_found
     def close(self):
         self.detector.close()
