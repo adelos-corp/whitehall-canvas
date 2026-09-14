@@ -26,20 +26,31 @@ class InvisibilityEffect:
                 interpolation=cv2.INTER_LINEAR,
             )
 
-        # Compare against the clean scene. The moving person becomes the mask.
+        # Build a robust foreground mask from both brightness and color change.
         diff = cv2.absdiff(frame_bgr, background)
-        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-        mask = cv2.threshold(gray, 28, 255, cv2.THRESH_BINARY)[1]
+        color_diff = diff.max(axis=2)
+        gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        change = np.maximum(color_diff, gray_diff)
 
-        # Clean small camera noise while keeping the body silhouette intact.
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        mask = cv2.GaussianBlur(mask, (9, 9), 0)
+        mask = cv2.threshold(change, 32, 255, cv2.THRESH_BINARY)[1]
 
-        # Slightly expand the mask so edges don't leave a ghost outline.
-        mask = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=1)
-        alpha = mask.astype(np.float32) / 255.0
+        # Remove camera noise, bridge small gaps in the silhouette, then fill
+        # the remaining foreground contours so clothing doesn't become a sieve.
+        small_kernel = np.ones((3, 3), np.uint8)
+        large_kernel = np.ones((9, 9), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, large_kernel, iterations=2)
+        mask = cv2.dilate(mask, np.ones((5, 5), np.uint8), iterations=1)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(mask)
+        for contour in contours:
+            if cv2.contourArea(contour) >= 250:
+                cv2.drawContours(filled, [contour], -1, 255, thickness=cv2.FILLED)
+
+        # Feather only the final edge, preserving a clean disappearance without
+        # the hard cutout/halo produced by a raw binary mask.
+        alpha = cv2.GaussianBlur(filled, (15, 15), 0).astype(np.float32) / 255.0
         alpha = alpha[:, :, None]
 
         result = (
