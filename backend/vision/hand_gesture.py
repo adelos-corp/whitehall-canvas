@@ -28,7 +28,7 @@ class HandGestureDetector:
         options = vision.HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=self.model_path),
             running_mode=vision.RunningMode.IMAGE,
-            num_hands=1,
+            num_hands=2,
             min_hand_detection_confidence=0.40,
             min_hand_presence_confidence=0.40,
             min_tracking_confidence=0.40,
@@ -69,30 +69,57 @@ class HandGestureDetector:
         rgb = np.ascontiguousarray(rgb)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = self.detector.detect(mp_image)
-        return result.hand_landmarks[0] if result.hand_landmarks else None
+        return result.hand_landmarks if result.hand_landmarks else []
 
-    def detect_hand_state(self, frame_bgr):
-        """Return (box, is_fist, is_l_shape, hand_found) from one detection."""
-        landmarks = self._detect_landmarks(frame_bgr)
-        if landmarks is None:
-            return None, False, False, False
+    def detect_hand_state(self, frame_bgr, locked_center=None):
+        """Return the state of the locked hand, ignoring other visible hands."""
+        all_hands = self._detect_landmarks(frame_bgr)
+        if not all_hands:
+            return None, False, False, False, locked_center
 
         h, w = frame_bgr.shape[:2]
+
+        def center(landmarks):
+            return (
+                sum(lm.x for lm in landmarks) / len(landmarks) * w,
+                sum(lm.y for lm in landmarks) / len(landmarks) * h,
+            )
+
+        centers = [center(hand) for hand in all_hands]
+
+        if locked_center is None:
+            # Lock onto the first stable hand detected after startup.
+            index = 0
+        else:
+            distances = [
+                (cx - locked_center[0]) ** 2 + (cy - locked_center[1]) ** 2
+                for cx, cy in centers
+            ]
+            index = min(range(len(distances)), key=distances.__getitem__)
+            # Do not jump across the frame to a different person's/hand's hand.
+            if distances[index] > (min(w, h) * 0.28) ** 2:
+                return None, False, False, False, locked_center
+
+        landmarks = all_hands[index]
+        selected_center = centers[index]
+
         xs = [int(lm.x * w) for lm in landmarks]
         ys = [int(lm.y * h) for lm in landmarks]
         pad = max(12, int(min(w, h) * 0.025))
-        box = (max(0, min(xs) - pad), max(0, min(ys) - pad),
-               min(w - 1, max(xs) + pad), min(h - 1, max(ys) + pad))
+        box = (
+            max(0, min(xs) - pad),
+            max(0, min(ys) - pad),
+            min(w - 1, max(xs) + pad),
+            min(h - 1, max(ys) + pad),
+        )
 
         fingers = ((5, 6, 8), (9, 10, 12), (13, 14, 16), (17, 18, 20))
-        extended = [self._finger_is_extended(landmarks, mcp, pip, tip)
-                    for mcp, pip, tip in fingers]
+        extended = [
+            self._finger_is_extended(landmarks, mcp, pip, tip)
+            for mcp, pip, tip in fingers
+        ]
 
         wrist = landmarks[0]
-
-        # Thumb extension is judged relative to the index MCP and thumb
-        # direction, rather than wrist distance alone. This is more stable
-        # when the hand is rotated or the thumb is partially foreshortened.
         thumb_tip = landmarks[4]
         thumb_ip = landmarks[3]
         index_mcp = landmarks[5]
@@ -101,24 +128,16 @@ class HandGestureDetector:
             and self._distance(thumb_tip, index_mcp) > self._distance(thumb_ip, index_mcp) * 1.12
         )
 
-        # Require the index finger to be decisively extended for L.
         index_extended = extended[0]
         other_fingers_curled = sum(extended[1:]) == 0
+        is_fist = sum(extended) == 0 and not thumb_extended
+        is_l_shape = thumb_extended and index_extended and other_fingers_curled
 
-        # A fist requires all four fingers to be confidently curled.
-        # This prevents a partially detected/occluded finger from immediately
-        # flipping the state to fist.
-        curled_count = 4 - sum(extended)
-        is_fist = curled_count >= 4 and not thumb_extended
+        return box, is_fist, is_l_shape, True, selected_center
 
-        # L gets priority only when its geometry is unambiguous.
-        is_l_shape = (
-            thumb_extended
-            and index_extended
-            and other_fingers_curled
-        )
-
-        return box, is_fist, is_l_shape, True
+    def is_fist(self, frame_bgr):
+        _, is_fist, _, hand_found, _ = self.detect_hand_state(frame_bgr)
+        return is_fist, hand_found
 
     def is_fist(self, frame_bgr):
         _, is_fist, _, hand_found = self.detect_hand_state(frame_bgr)
