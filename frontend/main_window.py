@@ -2,8 +2,8 @@ import sys
 
 import cv2
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
 
 from backend.camera.camera import Camera
 from backend.vision.hand_gesture import HandGestureDetector
@@ -13,6 +13,7 @@ from frontend.canvas import Canvas
 
 class MainWindow(QMainWindow):
     BACKGROUND_CAPTURE_FRAMES = 90
+    COUNTDOWN_SECONDS = 6
 
     def __init__(self):
         super().__init__()
@@ -27,15 +28,36 @@ class MainWindow(QMainWindow):
         self.fist_frames = 0
         self.open_frames = 0
         self.invisible = False
+        self.countdown_frames = self.COUNTDOWN_SECONDS * 60
+
+        self.countdown_label = QLabel(self.canvas)
+        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.setStyleSheet("color: white; background: transparent;")
+        self.countdown_label.setFont(QFont("Bodoni MT Condensed", 28))
+        self.countdown_label.setGeometry(0, 35, self.canvas.width(), 55)
+        self.countdown_label.raise_()
+        self._update_countdown_label()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(16)
         self.showFullScreen()
 
+    def _update_countdown_label(self):
+        seconds = max(0, (self.countdown_frames + 59) // 60)
+        if seconds > 0:
+            self.countdown_label.setText(f"Please wait {seconds} seconds before entering the frame.")
+            self.countdown_label.show()
+        else:
+            self.countdown_label.hide()
+
     def update_frame(self):
         frame = self.camera.read()
         frame = cv2.flip(frame, 1)
+
+        if self.countdown_frames > 0:
+            self.countdown_frames -= 1
+            self._update_countdown_label()
 
         # Keep the existing Liquid Glass button untouched.
         self.canvas.menu.set_frame(frame)
