@@ -46,7 +46,12 @@ class MainWindow(QMainWindow):
             self.capture_count += 1
             self.invisibility.capture_background(frame)
 
-        fist, hand_found = self.gesture.is_fist(frame)
+        # DEBUG: show only the hand detector result. Do not trigger invisibility.
+        hand_box = self.gesture.detect_hand_box(frame)
+        if hand_box is not None:
+            x1, y1, x2, y2 = hand_box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        fist, hand_found = False, False
 
         # Require consecutive frames so landmark jitter does not flicker the
         # effect on and off.
@@ -68,7 +73,7 @@ class MainWindow(QMainWindow):
         if self.capture_count < self.BACKGROUND_CAPTURE_FRAMES:
             self.invisible = False
 
-        output = self.invisibility.apply(frame, self.invisible)
+        output = frame
         rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         bytes_per_line = channels * width
