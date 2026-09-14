@@ -34,8 +34,8 @@ class MainWindow(QMainWindow):
         self.countdown_label = QLabel(self.canvas)
         self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.countdown_label.setStyleSheet("color: white; background: transparent;")
-        self.countdown_label.setFont(QFont("SF Pro Display", 44, QFont.Weight.Bold))
-        self.countdown_label.setGeometry(0, 50, self.width(), 70)
+        self.countdown_label.setFont(QFont("SF Pro Display", 55, QFont.Weight.Bold))
+        self.countdown_label.setGeometry(0, 28, self.canvas.width(), 82)
         self.countdown_label.raise_()
         self._update_countdown_label()
 
@@ -119,6 +119,12 @@ class MainWindow(QMainWindow):
             Qt.TransformationMode.SmoothTransformation,
         )
         self.canvas.video_label.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "countdown_label"):
+            self.countdown_label.setGeometry(0, 28, self.canvas.width(), 82)
+            self.countdown_label.raise_()
 
     def closeEvent(self, event):
         self.timer.stop()
