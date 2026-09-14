@@ -75,8 +75,10 @@ class MainWindow(QMainWindow):
             if elapsed_ms >= self.COUNTDOWN_SECONDS * 1000:
                 self.background_captured = True
 
-        # DEBUG: show hand detection and fist state only. Do not trigger invisibility.
         hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
+        if l_shape:
+            self.close()
+            return
         if hand_found:
             self.locked_hand_center = selected_center
             self.hand_lost_frames = 0
