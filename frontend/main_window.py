@@ -53,13 +53,12 @@ class MainWindow(QMainWindow):
             self.countdown_label.show()
         else:
             self.countdown_label.hide()
-            self.countdown_label.deleteLater()
 
     def update_frame(self):
         frame = self.camera.read()
         frame = cv2.flip(frame, 1)
 
-        if self.countdown_timer.isValid() and self.countdown_timer.elapsed() <= self.COUNTDOWN_SECONDS * 1000:
+        if self.countdown_label.isVisible():
             self._update_countdown_label()
 
         # Keep the existing Liquid Glass button untouched.
