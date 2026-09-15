@@ -75,10 +75,16 @@ class MainWindow(QMainWindow):
             if elapsed_ms >= self.COUNTDOWN_SECONDS * 1000:
                 self.background_captured = True
 
+        body_box = self.invisibility.detect_foreground_box(frame) if self.background_captured else None
+
         hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
         if l_shape:
             # Show the orange L state for one rendered frame before exiting.
-            if hand_box is not None:
+            if body_box is not None:
+            bx1, by1, bx2, by2 = body_box
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (255, 255, 255), 3)
+
+        if hand_box is not None:
                 x1, y1, x2, y2 = hand_box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 3)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
