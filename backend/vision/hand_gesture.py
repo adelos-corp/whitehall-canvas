@@ -29,11 +29,13 @@ class HandGestureDetector:
             base_options=BaseOptions(model_asset_path=self.model_path),
             running_mode=vision.RunningMode.IMAGE,
             num_hands=2,
-            min_hand_detection_confidence=0.40,
-            min_hand_presence_confidence=0.40,
-            min_tracking_confidence=0.40,
+            min_hand_detection_confidence=0.60,
+            min_hand_presence_confidence=0.60,
+            min_tracking_confidence=0.65,
         )
         self.detector = vision.HandLandmarker.create_from_options(options)
+        self.locked_center = None
+        self.lock_alpha = 0.22
 
     @staticmethod
     def _distance(a, b):
@@ -88,8 +90,14 @@ class HandGestureDetector:
         centers = [center(hand) for hand in all_hands]
 
         if locked_center is None:
-            # Lock onto the first stable hand detected after startup.
-            index = 0
+            # Prefer the largest hand, reducing accidental locks on a distant
+            # gesturing hand during the initial lock-on.
+            areas = []
+            for hand in all_hands:
+                hx = [lm.x * w for lm in hand]
+                hy = [lm.y * h for lm in hand]
+                areas.append((max(hx)-min(hx)) * (max(hy)-min(hy)))
+            index = max(range(len(areas)), key=areas.__getitem__)
         else:
             distances = [
                 (cx - locked_center[0]) ** 2 + (cy - locked_center[1]) ** 2
@@ -101,17 +109,26 @@ class HandGestureDetector:
                 return None, False, False, False, locked_center
 
         landmarks = all_hands[index]
-        selected_center = centers[index]
+        raw_center = centers[index]
+        if locked_center is None:
+            selected_center = raw_center
+        else:
+            selected_center = (
+                locked_center[0] * (1.0 - self.lock_alpha) + raw_center[0] * self.lock_alpha,
+                locked_center[1] * (1.0 - self.lock_alpha) + raw_center[1] * self.lock_alpha,
+            )
 
         xs = [int(lm.x * w) for lm in landmarks]
         ys = [int(lm.y * h) for lm in landmarks]
         pad = max(12, int(min(w, h) * 0.025))
-        box = (
-            max(0, min(xs) - pad),
-            max(0, min(ys) - pad),
-            min(w - 1, max(xs) + pad),
-            min(h - 1, max(ys) + pad),
-        )
+        cx, cy = selected_center
+        raw_box = (max(0, min(xs) - pad), max(0, min(ys) - pad), min(w - 1, max(xs) + pad), min(h - 1, max(ys) + pad))
+        if locked_center is not None and self.locked_center is not None:
+            dx = cx - self.locked_center[0]
+            dy = cy - self.locked_center[1]
+            raw_box = (int(raw_box[0]-dx*.78), int(raw_box[1]-dy*.78), int(raw_box[2]-dx*.78), int(raw_box[3]-dy*.78))
+        self.locked_center = selected_center
+        box = tuple(max(0, min(v, limit)) for v, limit in zip(raw_box, (w-1, h-1, w-1, h-1)))
 
         fingers = ((5, 6, 8), (9, 10, 12), (13, 14, 16), (17, 18, 20))
         extended = [
