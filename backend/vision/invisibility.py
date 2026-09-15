@@ -11,6 +11,30 @@ class InvisibilityEffect:
     def capture_background(self, frame_bgr):
         self.background = frame_bgr.copy()
 
+    def detect_foreground_box(self, frame_bgr):
+        """Return a bounding box around the main person foreground."""
+        if self.background is None or self.background.shape != frame_bgr.shape:
+            return None
+        diff = cv2.absdiff(frame_bgr, self.background)
+        change = diff.max(axis=2)
+        mask = cv2.threshold(change, 28, 255, cv2.THRESH_BINARY)[1]
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8), iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8), iterations=3)
+        mask = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=2)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [c for c in contours if cv2.contourArea(c) >= 1200]
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(contour)
+        frame_h, frame_w = frame_bgr.shape[:2]
+        if w < frame_w * 0.08 or h < frame_h * 0.12:
+            return None
+        pad_x = max(10, int(w * 0.025))
+        pad_y = max(10, int(h * 0.025))
+        return (max(0, x-pad_x), max(0, y-pad_y),
+                min(frame_w-1, x+w+pad_x), min(frame_h-1, y+h+pad_y))
+
     def ready(self):
         return self.background is not None
 
