@@ -7,9 +7,11 @@ class InvisibilityEffect:
 
     def __init__(self):
         self.background = None
+        self.body_box = None
 
     def capture_background(self, frame_bgr):
         self.background = frame_bgr.copy()
+        self.body_box = None
 
     def detect_foreground_box(self, frame_bgr):
         """Return a bounding box around the main person foreground."""
@@ -32,8 +34,13 @@ class InvisibilityEffect:
             return None
         pad_x = max(10, int(w * 0.025))
         pad_y = max(10, int(h * 0.025))
-        return (max(0, x-pad_x), max(0, y-pad_y),
-                min(frame_w-1, x+w+pad_x), min(frame_h-1, y+h+pad_y))
+        detected = (max(0, x-pad_x), max(0, y-pad_y), min(frame_w-1, x+w+pad_x), min(frame_h-1, y+h+pad_y))
+        if self.body_box is None:
+            self.body_box = tuple(float(v) for v in detected)
+        else:
+            # Low-pass the body box so it does not jump with clothing/camera noise.
+            self.body_box = tuple(0.20 * d + 0.80 * old for d, old in zip(detected, self.body_box))
+        return tuple(int(v) for v in self.body_box)
 
     def ready(self):
         return self.background is not None
