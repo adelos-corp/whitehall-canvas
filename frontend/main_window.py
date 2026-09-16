@@ -163,7 +163,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.timer.stop()
         self.gesture.close()
-        self.invisibility.close()
         self.camera.stop()
         event.accept()
 
