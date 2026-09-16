@@ -96,36 +96,48 @@ class HandGestureDetector:
 
     @classmethod
     def _classify(cls, lm):
+        # Finger state is determined from joint angles and tip-to-palm distance.
+        # Requiring several independent signals makes a relaxed/half-closed hand
+        # much less likely to be classified as a fist.
         index = cls._finger_extended(lm, 5, 6, 7, 8)
         middle = cls._finger_extended(lm, 9, 10, 11, 12)
         ring = cls._finger_extended(lm, 13, 14, 15, 16)
         pinky = cls._finger_extended(lm, 17, 18, 19, 20)
-        curled = [
-            cls._finger_curled(lm, 5, 6, 7, 8),
-            cls._finger_curled(lm, 9, 10, 11, 12),
-            cls._finger_curled(lm, 13, 14, 15, 16),
-            cls._finger_curled(lm, 17, 18, 19, 20),
-        ]
-        thumb = cls._thumb_extended(lm)
 
-        # L requires exactly index + thumb extended, with all other fingers
-        # demonstrably curled. A loose "two fingers up" rule caused false exits.
-        is_l = (
-            thumb and index and
-            all(curled[1:]) and
-            not middle and not ring and not pinky and
-            cls._distance(lm[4], lm[8]) > 0.45 * cls._distance(lm[0], lm[9])
-        )
+        curled_index = cls._finger_curled(lm, 5, 6, 7, 8)
+        curled_middle = cls._finger_curled(lm, 9, 10, 11, 12)
+        curled_ring = cls._finger_curled(lm, 13, 14, 15, 16)
+        curled_pinky = cls._finger_curled(lm, 17, 18, 19, 20)
 
-        # Fist requires every finger to be curled and the thumb to be folded.
+        thumb_angle = cls._angle(lm[1], lm[2], lm[4])
+        thumb_to_palm = cls._distance(lm[4], lm[9])
+        palm_size = cls._distance(lm[0], lm[9])
+
+        # A fist has no extended fingers. Its four fingertips are pulled toward
+        # the palm, and the thumb crosses/folds over the index side of the hand.
+        four_curled = all((curled_index, curled_middle, curled_ring, curled_pinky))
+        four_not_extended = not any((index, middle, ring, pinky))
         thumb_folded = (
-            cls._distance(lm[4], lm[0]) < cls._distance(lm[2], lm[0]) * 1.55
-            and cls._angle(lm[1], lm[2], lm[3]) < 150.0
+            thumb_to_palm < palm_size * 0.72
+            and thumb_angle < 145.0
         )
-        is_fist = all(curled) and thumb_folded
+        is_fist = four_curled and four_not_extended and thumb_folded
+
+        # L requires exactly thumb + index extended and the other three curled.
+        thumb_extended = (
+            cls._angle(lm[2], lm[3], lm[4]) > 145.0
+            and cls._distance(lm[4], lm[1]) > cls._distance(lm[3], lm[1]) * 1.10
+            and cls._distance(lm[4], lm[5]) > palm_size * 0.32
+        )
+        is_l = (
+            thumb_extended and index and
+            curled_middle and curled_ring and curled_pinky and
+            not middle and not ring and not pinky and
+            cls._distance(lm[4], lm[8]) > palm_size * 0.45
+        )
 
         is_open = (
-            thumb and index and middle and ring and pinky
+            thumb_extended and index and middle and ring and pinky
         )
         return is_open, is_fist, is_l
 
