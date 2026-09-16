@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         self.invisible = False
         self.locked_hand_center = None
         self.hand_lost_frames = 0
+        self.l_frames = 0
         self.countdown_timer = QElapsedTimer()
         self.countdown_timer.start()
 
@@ -82,7 +83,15 @@ class MainWindow(QMainWindow):
             bx1, by1, bx2, by2 = body_box
             cv2.rectangle(frame, (bx1, by1), (bx2, by2), (255, 255, 255), 3)
 
-        if l_shape:
+        # L is deliberately gated over consecutive frames. A single noisy
+        # landmark frame must never terminate a demo.
+        if hand_found and l_shape:
+            self.l_frames += 1
+        else:
+            self.l_frames = max(0, self.l_frames - 1)
+        stable_l = self.l_frames >= 5
+
+        if stable_l:
             # Show the orange L state for one rendered frame before exiting.
             if hand_box is not None:
                 x1, y1, x2, y2 = hand_box
@@ -104,7 +113,7 @@ class MainWindow(QMainWindow):
                 self.hand_lost_frames = 0
         if hand_box is not None:
             x1, y1, x2, y2 = hand_box
-            if l_shape:
+            if stable_l:
                 box_color = (0, 165, 255)  # Orange
             elif fist:
                 box_color = (0, 0, 255)    # Red
@@ -125,9 +134,9 @@ class MainWindow(QMainWindow):
             self.fist_frames = max(0, self.fist_frames - 1)
             self.open_frames = max(0, self.open_frames - 1)
 
-        if self.fist_frames >= 4:
+        if self.fist_frames >= 6:
             self.invisible = True
-        elif self.open_frames >= 3:
+        elif self.open_frames >= 5:
             self.invisible = False
 
         if not self.background_captured:
