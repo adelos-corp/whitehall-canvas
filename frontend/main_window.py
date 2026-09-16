@@ -76,13 +76,7 @@ class MainWindow(QMainWindow):
             if elapsed_ms >= self.COUNTDOWN_SECONDS * 1000:
                 self.background_captured = True
 
-        body_box = self.invisibility.detect_foreground_box(frame) if self.background_captured else None
-
         hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
-        if body_box is not None:
-            bx1, by1, bx2, by2 = body_box
-            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (255, 255, 255), 3)
-
         # L is deliberately gated over consecutive frames. A single noisy
         # landmark frame must never terminate a demo.
         if hand_found and l_shape:
