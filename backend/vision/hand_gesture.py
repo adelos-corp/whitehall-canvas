@@ -129,7 +129,10 @@ class HandGestureDetector:
         if not ok:
             return []
         data = Foundation.NSData.dataWithBytes_length_(encoded.tobytes(), int(encoded.nbytes))
-        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, {})
+        # Vision accepts a nil options dictionary. Using None here avoids
+        # PyObjC treating the Python empty dict as an Objective-C proxy during
+        # this initializer on some Python/PyObjC combinations.
+        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
         try:
             handler.performRequests_error_([self.request], None)
         except Exception:
@@ -150,8 +153,6 @@ class HandGestureDetector:
             if confidence < self.min_confidence:
                 return None
             location = point.location()
-            # Vision coordinates use a lower-left origin; OpenCV uses a
-            # top-left origin. Convert once at the API boundary.
             landmarks[name] = np.array([float(location.x), 1.0 - float(location.y)], dtype=np.float32)
             confidences.append(confidence)
         if not confidences or min(confidences) < self.min_confidence:
@@ -238,7 +239,4 @@ class HandGestureDetector:
 
     def is_fist(self, frame_bgr):
         _, is_fist, _, found, _ = self.detect_hand_state(frame_bgr, self.locked_center)
-        return is_fist, found
-
-    def close(self):
-        self.request = None
+        return bool(found and is_fist)
