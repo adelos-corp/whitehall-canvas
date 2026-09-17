@@ -1,60 +1,57 @@
-import os
-import urllib.request
-
+import Foundation
+import Vision
 import cv2
 import numpy as np
-import mediapipe as mp
-
-BaseOptions = mp.tasks.BaseOptions
-vision = mp.tasks.vision
 
 
 class HandGestureDetector:
-    """Stable hand-state detector for Whitehall Canvas.
+    """Apple Vision hand-pose detector with deterministic gesture classification.
 
-    Uses MediaPipe Hand Landmarker landmarks, but classifies gestures from
-    joint geometry plus temporal hysteresis so single-frame landmark jitter
-    cannot switch the canvas state.
+    Vision supplies the hand landmarks and confidence values. Whitehall Canvas
+    keeps ownership of gesture semantics, so OPEN/FIST/L remain explicit and
+    tunable instead of being delegated to a second opaque model.
     """
 
-    MODEL_URL = (
-        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-        "hand_landmarker/float16/1/hand_landmarker.task"
-    )
+    JOINTS = {
+        "wrist": Vision.VNHumanHandPoseObservationJointNameWrist,
+        "thumb_cmc": Vision.VNHumanHandPoseObservationJointNameThumbCMC,
+        "thumb_mp": Vision.VNHumanHandPoseObservationJointNameThumbMP,
+        "thumb_ip": Vision.VNHumanHandPoseObservationJointNameThumbIP,
+        "thumb_tip": Vision.VNHumanHandPoseObservationJointNameThumbTip,
+        "index_mcp": Vision.VNHumanHandPoseObservationJointNameIndexMCP,
+        "index_pip": Vision.VNHumanHandPoseObservationJointNameIndexPIP,
+        "index_dip": Vision.VNHumanHandPoseObservationJointNameIndexDIP,
+        "index_tip": Vision.VNHumanHandPoseObservationJointNameIndexTip,
+        "middle_mcp": Vision.VNHumanHandPoseObservationJointNameMiddleMCP,
+        "middle_pip": Vision.VNHumanHandPoseObservationJointNameMiddlePIP,
+        "middle_dip": Vision.VNHumanHandPoseObservationJointNameMiddleDIP,
+        "middle_tip": Vision.VNHumanHandPoseObservationJointNameMiddleTip,
+        "ring_mcp": Vision.VNHumanHandPoseObservationJointNameRingMCP,
+        "ring_pip": Vision.VNHumanHandPoseObservationJointNameRingPIP,
+        "ring_dip": Vision.VNHumanHandPoseObservationJointNameRingDIP,
+        "ring_tip": Vision.VNHumanHandPoseObservationJointNameRingTip,
+        "little_mcp": Vision.VNHumanHandPoseObservationJointNameLittleMCP,
+        "little_pip": Vision.VNHumanHandPoseObservationJointNameLittlePIP,
+        "little_dip": Vision.VNHumanHandPoseObservationJointNameLittleDIP,
+        "little_tip": Vision.VNHumanHandPoseObservationJointNameLittleTip,
+    }
 
     def __init__(self):
-        model_dir = os.path.join(os.path.dirname(__file__), "models")
-        os.makedirs(model_dir, exist_ok=True)
-        self.model_path = os.path.join(model_dir, "hand_landmarker.task")
-        if not os.path.exists(self.model_path):
-            urllib.request.urlretrieve(self.MODEL_URL, self.model_path)
-
-        options = vision.HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=self.model_path),
-            running_mode=vision.RunningMode.IMAGE,
-            num_hands=2,
-            min_hand_detection_confidence=0.70,
-            min_hand_presence_confidence=0.70,
-            min_tracking_confidence=0.75,
-        )
-        self.detector = vision.HandLandmarker.create_from_options(options)
-
+        self.request = Vision.VNDetectHumanHandPoseRequest.alloc().init()
+        self.request.setMaximumHandCount_(2)
         self.locked_center = None
         self.locked_handedness = None
         self.lock_alpha = 0.18
+        self.min_confidence = 0.35
 
     @staticmethod
     def _distance(a, b):
-        return float(np.linalg.norm(
-            np.array([a.x, a.y, a.z], dtype=np.float32) -
-            np.array([b.x, b.y, b.z], dtype=np.float32)
-        ))
+        return float(np.linalg.norm(np.asarray(a, dtype=np.float32) - np.asarray(b, dtype=np.float32)))
 
     @staticmethod
     def _angle(a, b, c):
-        """Angle ABC in degrees."""
-        va = np.array([a.x-b.x, a.y-b.y, a.z-b.z], dtype=np.float32)
-        vc = np.array([c.x-b.x, c.y-b.y, c.z-b.z], dtype=np.float32)
+        va = np.asarray(a, dtype=np.float32) - np.asarray(b, dtype=np.float32)
+        vc = np.asarray(c, dtype=np.float32) - np.asarray(b, dtype=np.float32)
         den = float(np.linalg.norm(va) * np.linalg.norm(vc))
         if den < 1e-6:
             return 0.0
@@ -62,22 +59,17 @@ class HandGestureDetector:
 
     @classmethod
     def _finger_extended(cls, lm, mcp, pip, dip, tip):
-        # Extension requires both joints to be reasonably straight and the tip
-        # to be farther from the wrist than the intermediate joints.
-        wrist = lm[0]
+        wrist = lm["wrist"]
         straight = (
             cls._angle(lm[mcp], lm[pip], lm[dip]) > 150.0
             and cls._angle(lm[pip], lm[dip], lm[tip]) > 145.0
         )
-        radial = (
-            cls._distance(lm[tip], wrist) >
-            cls._distance(lm[pip], wrist) * 1.10
-        )
+        radial = cls._distance(lm[tip], wrist) > cls._distance(lm[pip], wrist) * 1.10
         return straight and radial
 
     @classmethod
     def _finger_curled(cls, lm, mcp, pip, dip, tip):
-        wrist = lm[0]
+        wrist = lm["wrist"]
         bent = (
             cls._angle(lm[mcp], lm[pip], lm[dip]) < 145.0
             or cls._angle(lm[pip], lm[dip], lm[tip]) < 140.0
@@ -86,139 +78,158 @@ class HandGestureDetector:
         return bent and close
 
     @classmethod
-    def _thumb_extended(cls, lm):
-        # Thumb needs both a straight thumb and meaningful separation from the
-        # index MCP. This rejects many half-closed hands that resemble an L.
-        straight = cls._angle(lm[2], lm[3], lm[4]) > 145.0
-        reach = cls._distance(lm[4], lm[1]) > cls._distance(lm[3], lm[1]) * 1.12
-        spread = cls._distance(lm[4], lm[5]) > 0.32 * cls._distance(lm[0], lm[9])
-        return straight and reach and spread
-
-    @classmethod
     def _classify(cls, lm):
-        # Finger state is determined from joint angles and tip-to-palm distance.
-        # Requiring several independent signals makes a relaxed/half-closed hand
-        # much less likely to be classified as a fist.
-        index = cls._finger_extended(lm, 5, 6, 7, 8)
-        middle = cls._finger_extended(lm, 9, 10, 11, 12)
-        ring = cls._finger_extended(lm, 13, 14, 15, 16)
-        pinky = cls._finger_extended(lm, 17, 18, 19, 20)
+        index = cls._finger_extended(lm, "index_mcp", "index_pip", "index_dip", "index_tip")
+        middle = cls._finger_extended(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip")
+        ring = cls._finger_extended(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip")
+        little = cls._finger_extended(lm, "little_mcp", "little_pip", "little_dip", "little_tip")
 
-        curled_index = cls._finger_curled(lm, 5, 6, 7, 8)
-        curled_middle = cls._finger_curled(lm, 9, 10, 11, 12)
-        curled_ring = cls._finger_curled(lm, 13, 14, 15, 16)
-        curled_pinky = cls._finger_curled(lm, 17, 18, 19, 20)
+        curled_index = cls._finger_curled(lm, "index_mcp", "index_pip", "index_dip", "index_tip")
+        curled_middle = cls._finger_curled(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip")
+        curled_ring = cls._finger_curled(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip")
+        curled_little = cls._finger_curled(lm, "little_mcp", "little_pip", "little_dip", "little_tip")
 
-        thumb_angle = cls._angle(lm[1], lm[2], lm[4])
-        thumb_to_palm = cls._distance(lm[4], lm[9])
-        palm_size = cls._distance(lm[0], lm[9])
+        wrist = lm["wrist"]
+        thumb_tip = lm["thumb_tip"]
+        thumb_mp = lm["thumb_mp"]
+        palm_size = cls._distance(wrist, lm["middle_mcp"])
 
-        # A fist has no extended fingers. Its four fingertips are pulled toward
-        # the palm, and the thumb crosses/folds over the index side of the hand.
-        four_curled = all((curled_index, curled_middle, curled_ring, curled_pinky))
-        four_not_extended = not any((index, middle, ring, pinky))
-        thumb_folded = (
-            thumb_to_palm < palm_size * 0.72
-            and thumb_angle < 145.0
-        )
+        thumb_straight = cls._angle(lm["thumb_mp"], lm["thumb_ip"], lm["thumb_tip"]) > 145.0
+        thumb_reach = cls._distance(thumb_tip, lm["thumb_cmc"]) > cls._distance(thumb_mp, lm["thumb_cmc"]) * 1.10
+        thumb_spread = cls._distance(thumb_tip, lm["index_mcp"]) > palm_size * 0.32
+        thumb_extended = thumb_straight and thumb_reach and thumb_spread
+
+        thumb_to_palm = cls._distance(thumb_tip, lm["middle_mcp"])
+        thumb_folded = thumb_to_palm < palm_size * 0.72 and cls._angle(lm["thumb_cmc"], lm["thumb_mp"], thumb_tip) < 145.0
+
+        four_curled = all((curled_index, curled_middle, curled_ring, curled_little))
+        four_not_extended = not any((index, middle, ring, little))
         is_fist = four_curled and four_not_extended and thumb_folded
 
-        # L requires exactly thumb + index extended and the other three curled.
-        thumb_extended = (
-            cls._angle(lm[2], lm[3], lm[4]) > 145.0
-            and cls._distance(lm[4], lm[1]) > cls._distance(lm[3], lm[1]) * 1.10
-            and cls._distance(lm[4], lm[5]) > palm_size * 0.32
-        )
         is_l = (
-            thumb_extended and index and
-            curled_middle and curled_ring and curled_pinky and
-            not middle and not ring and not pinky and
-            cls._distance(lm[4], lm[8]) > palm_size * 0.45
+            thumb_extended
+            and index
+            and curled_middle
+            and curled_ring
+            and curled_little
+            and not middle
+            and not ring
+            and not little
+            and cls._distance(thumb_tip, lm["index_tip"]) > palm_size * 0.45
         )
 
-        is_open = (
-            thumb_extended and index and middle and ring and pinky
-        )
+        is_open = thumb_extended and index and middle and ring and little
         return is_open, is_fist, is_l
 
-    def _detect(self, frame_bgr):
-        rgb = np.ascontiguousarray(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
-        result = self.detector.detect(
-            mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+    def _request_points(self, frame_bgr):
+        # Vision accepts image Data directly. JPEG is used only as the bridge
+        # from OpenCV's NumPy frame to Apple's image-analysis API; no model or
+        # external inference runtime is involved.
+        ok, encoded = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        if not ok:
+            return []
+        data = Foundation.NSData.dataWithBytes_length_(encoded.tobytes(), int(encoded.nbytes))
+        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, {})
+        try:
+            handler.performRequests_error_([self.request], None)
+        except Exception:
+            return []
+        return self.request.results() or []
+
+    def _observation_landmarks(self, observation):
+        landmarks = {}
+        confidences = []
+        for name, joint in self.JOINTS.items():
+            try:
+                point, error = observation.recognizedPointForJointName_error_(joint, None)
+            except Exception:
+                return None
+            if point is None:
+                return None
+            confidence = float(point.confidence())
+            if confidence < self.min_confidence:
+                return None
+            location = point.location()
+            # Vision coordinates use a lower-left origin; OpenCV uses a
+            # top-left origin. Convert once at the API boundary.
+            landmarks[name] = np.array([float(location.x), 1.0 - float(location.y)], dtype=np.float32)
+            confidences.append(confidence)
+        if not confidences or min(confidences) < self.min_confidence:
+            return None
+        return landmarks
+
+    @staticmethod
+    def _center(landmarks, width, height):
+        points = np.asarray(list(landmarks.values()), dtype=np.float32)
+        return float(points[:, 0].mean() * width), float(points[:, 1].mean() * height)
+
+    @staticmethod
+    def _box(landmarks, width, height):
+        points = np.asarray(list(landmarks.values()), dtype=np.float32)
+        xs = points[:, 0] * width
+        ys = points[:, 1] * height
+        pad = max(14, int(min(width, height) * 0.03))
+        return (
+            max(0, int(xs.min()) - pad),
+            max(0, int(ys.min()) - pad),
+            min(width - 1, int(xs.max()) + pad),
+            min(height - 1, int(ys.max()) + pad),
         )
-        return result.hand_landmarks, result.handedness
 
     def detect_hand_state(self, frame_bgr, locked_center=None):
-        all_hands, handedness = self._detect(frame_bgr)
-        if not all_hands:
+        observations = self._request_points(frame_bgr)
+        if not observations:
             return None, False, False, False, locked_center
 
-        h, w = frame_bgr.shape[:2]
+        height, width = frame_bgr.shape[:2]
+        candidates = []
+        for observation in observations:
+            landmarks = self._observation_landmarks(observation)
+            if landmarks is None:
+                continue
+            box = self._box(landmarks, width, height)
+            area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            center = self._center(landmarks, width, height)
+            try:
+                chirality = int(observation.chirality())
+            except Exception:
+                chirality = None
+            candidates.append((area, center, box, landmarks, chirality))
 
-        def center(lm):
-            return (
-                sum(p.x for p in lm) / len(lm) * w,
-                sum(p.y for p in lm) / len(lm) * h,
-            )
-
-        centers = [center(hand) for hand in all_hands]
+        if not candidates:
+            return None, False, False, False, locked_center
 
         if locked_center is None:
-            # Lock onto the physically largest/closest hand.
-            areas = []
-            for hand in all_hands:
-                xs = [p.x * w for p in hand]
-                ys = [p.y * h for p in hand]
-                areas.append((max(xs)-min(xs)) * (max(ys)-min(ys)))
-            index = int(np.argmax(areas))
+            selected = max(candidates, key=lambda item: item[0])
+            selected_center = selected[1]
+            self.locked_center = selected_center
+            self.locked_handedness = selected[4]
         else:
-            distances = [
-                (cx-locked_center[0]) ** 2 + (cy-locked_center[1]) ** 2
-                for cx, cy in centers
-            ]
-            index = int(np.argmin(distances))
-            max_jump = (min(w, h) * 0.22) ** 2
-            if distances[index] > max_jump:
+            def score(item):
+                dx = item[1][0] - locked_center[0]
+                dy = item[1][1] - locked_center[1]
+                return dx * dx + dy * dy
+
+            selected = min(candidates, key=score)
+            max_jump = (min(width, height) * 0.22) ** 2
+            if score(selected) > max_jump:
                 return None, False, False, False, locked_center
 
-            # If handedness is known, do not silently swap left/right hands.
-            if self.locked_handedness is not None and handedness:
-                label = handedness[index][0].category_name
-                if label != self.locked_handedness:
-                    candidates = [
-                        i for i, hnd in enumerate(handedness)
-                        if hnd and hnd[0].category_name == self.locked_handedness
-                    ]
-                    if candidates:
-                        index = min(candidates, key=lambda i:
-                            (centers[i][0]-locked_center[0])**2 +
-                            (centers[i][1]-locked_center[1])**2)
-                    else:
-                        return None, False, False, False, locked_center
+            if self.locked_handedness is not None:
+                matching = [item for item in candidates if item[4] == self.locked_handedness]
+                if matching:
+                    selected = min(matching, key=score)
+                elif score(selected) > max_jump * 0.5:
+                    return None, False, False, False, locked_center
 
-        lm = all_hands[index]
-        raw_center = centers[index]
-        if locked_center is None:
-            selected_center = raw_center
-            if handedness and handedness[index]:
-                self.locked_handedness = handedness[index][0].category_name
-        else:
             selected_center = (
-                locked_center[0] * (1.0-self.lock_alpha) + raw_center[0] * self.lock_alpha,
-                locked_center[1] * (1.0-self.lock_alpha) + raw_center[1] * self.lock_alpha,
+                locked_center[0] * (1.0 - self.lock_alpha) + selected[1][0] * self.lock_alpha,
+                locked_center[1] * (1.0 - self.lock_alpha) + selected[1][1] * self.lock_alpha,
             )
+            self.locked_center = selected_center
 
-        self.locked_center = selected_center
-
-        xs = [int(p.x*w) for p in lm]
-        ys = [int(p.y*h) for p in lm]
-        pad = max(14, int(min(w, h) * 0.03))
-        box = (
-            max(0, min(xs)-pad), max(0, min(ys)-pad),
-            min(w-1, max(xs)+pad), min(h-1, max(ys)+pad)
-        )
-
-        is_open, is_fist, is_l = self._classify(lm)
+        _, _, box, landmarks, _ = selected
+        is_open, is_fist, is_l = self._classify(landmarks)
         return box, is_fist, is_l, True, selected_center
 
     def detect_hand_box(self, frame_bgr):
@@ -230,4 +241,4 @@ class HandGestureDetector:
         return is_fist, found
 
     def close(self):
-        self.detector.close()
+        self.request = None
