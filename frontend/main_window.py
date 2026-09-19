@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
         self.invisible = False
         self.locked_hand_center = None
         self.hand_lost_frames = 0
-        self.l_frames = 0
+        self.exit_frames = 0
         self.open_finger_frames = 0
         self.display_finger = None
         self.countdown_timer = QElapsedTimer()
@@ -91,16 +91,16 @@ class MainWindow(QMainWindow):
             self.open_finger_frames = max(0, self.open_finger_frames - 1)
             if self.open_finger_frames == 0:
                 self.display_finger = None
-        # L is deliberately gated over consecutive frames. A single noisy
-        # landmark frame must never terminate a demo.
-        if hand_found and l_shape:
-            self.l_frames += 1
+        # Exit is gated over consecutive frames. The pose is exactly:
+        # thumb + index + middle extended, ring + pinky closed.
+        if hand_found and self.gesture.is_exit_gesture():
+            self.exit_frames += 1
         else:
-            self.l_frames = max(0, self.l_frames - 1)
-        stable_l = self.l_frames >= 5
+            self.exit_frames = max(0, self.exit_frames - 1)
+        stable_exit = self.exit_frames >= 5
 
-        if stable_l:
-            # Show the orange L state for one rendered frame before exiting.
+        if stable_exit:
+            # Show the recognized hand for one rendered frame before exiting.
             if hand_box is not None:
                 x1, y1, x2, y2 = hand_box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 3)
@@ -121,7 +121,7 @@ class MainWindow(QMainWindow):
                 self.hand_lost_frames = 0
         if hand_box is not None:
             x1, y1, x2, y2 = hand_box
-            if stable_l:
+            if stable_exit:
                 box_color = (0, 165, 255)  # Orange
             elif fist:
                 box_color = (0, 0, 255)    # Red
