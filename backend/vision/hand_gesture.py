@@ -54,6 +54,7 @@ class HandGestureDetector:
             "ring": "#E83E8C",
         }
         self.last_open_finger = None
+        self.last_exit_gesture = False
 
     @staticmethod
     def _distance(a, b):
@@ -207,6 +208,7 @@ class HandGestureDetector:
         observations = self._request_points(frame_bgr)
         if not observations:
             self.last_open_finger = None
+            self.last_exit_gesture = False
             return None, False, False, False, locked_center
 
         height, width = frame_bgr.shape[:2]
@@ -260,11 +262,22 @@ class HandGestureDetector:
         states = self._finger_states(landmarks)
         open_fingers = [name for name, is_open in states.items() if is_open]
         self.last_open_finger = open_fingers[0] if len(open_fingers) == 1 else None
+        # Exit gesture: thumb + index + middle extended, with ring + pinky closed.
+        self.last_exit_gesture = (
+            states["thumb"]
+            and states["index"]
+            and states["middle"]
+            and not states["ring"]
+            and not states["pinky"]
+        )
         is_open, is_fist, is_l = self._classify(landmarks)
         return box, is_fist, is_l, True, selected_center
 
     def get_open_finger(self):
         return self.last_open_finger
+
+    def is_exit_gesture(self):
+        return self.last_exit_gesture
 
     def detect_hand_box(self, frame_bgr):
         box, _, _, found, _ = self.detect_hand_state(frame_bgr, self.locked_center)
