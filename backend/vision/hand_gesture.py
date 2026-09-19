@@ -43,6 +43,26 @@ class HandGestureDetector:
         self.locked_handedness = None
         self.lock_alpha = 0.18
         self.min_confidence = 0.35
+        # Finger recognition is derived from the same Vision landmarks used by
+        # the existing gesture classifier. No second inference pass is used.
+        self.last_landmarks = None
+        self.last_finger_states = None
+
+    FINGER_COLORS = {
+        "index": "#0066FF",
+        "middle": "#FFD400",
+        "pinky": "#00B8D9",
+        "thumb": "#8C564B",
+        "ring": "#E83E8C",
+    }
+
+    FINGER_JOINTS = {
+        "index": ("index_mcp", "index_pip", "index_dip", "index_tip"),
+        "middle": ("middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
+        "ring": ("ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
+        "pinky": ("little_mcp", "little_pip", "little_dip", "little_tip"),
+        "thumb": ("thumb_cmc", "thumb_mp", "thumb_ip", "thumb_tip"),
+    }
 
     @staticmethod
     def _distance(a, b):
@@ -76,6 +96,27 @@ class HandGestureDetector:
         )
         close = cls._distance(lm[tip], wrist) < cls._distance(lm[mcp], wrist) * 1.35
         return bent and close
+
+    @classmethod
+    def _finger_states_from_landmarks(cls, lm):
+        """Return independent OPEN/CLOSED state for each named finger.
+
+        This is deliberately separate from _classify(), so the existing
+        OPEN/FIST/L gesture semantics remain unchanged.
+        """
+        states = {
+            "index": cls._finger_extended(lm, "index_mcp", "index_pip", "index_dip", "index_tip"),
+            "middle": cls._finger_extended(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
+            "ring": cls._finger_extended(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
+            "pinky": cls._finger_extended(lm, "little_mcp", "little_pip", "little_dip", "little_tip"),
+        }
+
+        thumb_straight = cls._angle(lm["thumb_mp"], lm["thumb_ip"], lm["thumb_tip"]) > 145.0
+        thumb_reach = cls._distance(lm["thumb_tip"], lm["thumb_cmc"]) > cls._distance(lm["thumb_mp"], lm["thumb_cmc"]) * 1.10
+        palm_size = cls._distance(lm["wrist"], lm["middle_mcp"])
+        thumb_spread = cls._distance(lm["thumb_tip"], lm["index_mcp"]) > palm_size * 0.32
+        states["thumb"] = thumb_straight and thumb_reach and thumb_spread
+        return states
 
     @classmethod
     def _classify(cls, lm):
@@ -180,6 +221,8 @@ class HandGestureDetector:
     def detect_hand_state(self, frame_bgr, locked_center=None):
         observations = self._request_points(frame_bgr)
         if not observations:
+            self.last_landmarks = None
+            self.last_finger_states = None
             return None, False, False, False, locked_center
 
         height, width = frame_bgr.shape[:2]
@@ -198,6 +241,8 @@ class HandGestureDetector:
             candidates.append((area, center, box, landmarks, chirality))
 
         if not candidates:
+            self.last_landmarks = None
+            self.last_finger_states = None
             return None, False, False, False, locked_center
 
         if locked_center is None:
@@ -214,6 +259,8 @@ class HandGestureDetector:
             selected = min(candidates, key=score)
             max_jump = (min(width, height) * 0.22) ** 2
             if score(selected) > max_jump:
+                self.last_landmarks = None
+                self.last_finger_states = None
                 return None, False, False, False, locked_center
 
             if self.locked_handedness is not None:
@@ -221,6 +268,8 @@ class HandGestureDetector:
                 if matching:
                     selected = min(matching, key=score)
                 elif score(selected) > max_jump * 0.5:
+                    self.last_landmarks = None
+                    self.last_finger_states = None
                     return None, False, False, False, locked_center
 
             selected_center = (
@@ -230,8 +279,24 @@ class HandGestureDetector:
             self.locked_center = selected_center
 
         _, _, box, landmarks, _ = selected
+        # Cache the selected Vision landmarks for the rendering layer. This
+        # does not change the existing gesture classification or thresholds.
+        self.last_landmarks = landmarks
+        self.last_finger_states = self._finger_states_from_landmarks(landmarks)
         is_open, is_fist, is_l = self._classify(landmarks)
         return box, is_fist, is_l, True, selected_center
+
+    def get_finger_landmarks(self):
+        """Return the latest selected-hand landmarks for rendering."""
+        if self.last_landmarks is None:
+            return None
+        return {name: point.copy() for name, point in self.last_landmarks.items()}
+
+    def get_finger_states(self):
+        """Return the latest independent OPEN/CLOSED state for each finger."""
+        if self.last_finger_states is None:
+            return None
+        return dict(self.last_finger_states)
 
     def detect_hand_box(self, frame_bgr):
         box, _, _, found, _ = self.detect_hand_state(frame_bgr, self.locked_center)
