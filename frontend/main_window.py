@@ -30,6 +30,8 @@ class MainWindow(QMainWindow):
         self.locked_hand_center = None
         self.hand_lost_frames = 0
         self.l_frames = 0
+        self.open_finger_frames = 0
+        self.display_finger = None
         self.countdown_timer = QElapsedTimer()
         self.countdown_timer.start()
 
@@ -77,6 +79,18 @@ class MainWindow(QMainWindow):
                 self.background_captured = True
 
         hand_box, fist, l_shape, hand_found, selected_center = self.gesture.detect_hand_state(frame, self.locked_hand_center)
+
+        # Individual finger identification is UI-only. The assigned colors
+        # remain internal and are never drawn into the camera feed.
+        open_finger = self.gesture.get_open_finger() if hand_found else None
+        if open_finger:
+            self.open_finger_frames += 1
+            if self.open_finger_frames >= 3:
+                self.display_finger = open_finger
+        else:
+            self.open_finger_frames = max(0, self.open_finger_frames - 1)
+            if self.open_finger_frames == 0:
+                self.display_finger = None
         # L is deliberately gated over consecutive frames. A single noisy
         # landmark frame must never terminate a demo.
         if hand_found and l_shape:
@@ -137,6 +151,21 @@ class MainWindow(QMainWindow):
             self.invisible = False
 
         output = self.invisibility.apply(frame, self.invisible) if self.background_captured else frame
+
+        # Clean camera feed: only a small blue finger name appears in the
+        # bottom-right when exactly one finger is recognized as open.
+        if self.display_finger:
+            finger_label = f"{self.display_finger.capitalize()} finger"
+            cv2.putText(
+                output,
+                finger_label,
+                (output.shape[1] - 260, output.shape[0] - 32),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.72,
+                (255, 0, 0),
+                2,
+                cv2.LINE_AA,
+            )
         rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         bytes_per_line = channels * width
