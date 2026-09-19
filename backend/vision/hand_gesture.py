@@ -89,19 +89,61 @@ class HandGestureDetector:
         close = cls._distance(lm[tip], wrist) < cls._distance(lm[mcp], wrist) * 1.35
         return bent and close
 
+    @staticmethod
+    def _clamp01(value):
+        return float(np.clip(value, 0.0, 1.0))
+
+    @classmethod
+    def _finger_open_score(cls, lm, mcp, pip, dip, tip):
+        """Score one non-thumb finger's extension without touching hand gestures."""
+        pip_angle = cls._angle(lm[mcp], lm[pip], lm[dip])
+        dip_angle = cls._angle(lm[pip], lm[dip], lm[tip])
+
+        # A straight finger approaches 180 degrees at both joints.
+        straight = 0.5 * cls._clamp01((pip_angle - 125.0) / 35.0)
+        straight += 0.5 * cls._clamp01((dip_angle - 125.0) / 35.0)
+
+        wrist = lm["wrist"]
+        tip_wrist = cls._distance(lm[tip], wrist)
+        pip_wrist = cls._distance(lm[pip], wrist)
+        radial = cls._clamp01((tip_wrist / max(pip_wrist, 1e-6) - 1.02) / 0.16)
+
+        tip_mcp = cls._distance(lm[tip], lm[mcp])
+        pip_mcp = cls._distance(lm[pip], lm[mcp])
+        reach = cls._clamp01((tip_mcp / max(pip_mcp, 1e-6) - 1.02) / 0.22)
+
+        return 0.55 * straight + 0.25 * radial + 0.20 * reach
+
     @classmethod
     def _finger_states(cls, lm):
-        states = {
-            "index": cls._finger_extended(lm, "index_mcp", "index_pip", "index_dip", "index_tip"),
-            "middle": cls._finger_extended(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
-            "ring": cls._finger_extended(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
-            "pinky": cls._finger_extended(lm, "little_mcp", "little_pip", "little_dip", "little_tip"),
+        scores = {
+            "index": cls._finger_open_score(lm, "index_mcp", "index_pip", "index_dip", "index_tip"),
+            "middle": cls._finger_open_score(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
+            "ring": cls._finger_open_score(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
+            "pinky": cls._finger_open_score(lm, "little_mcp", "little_pip", "little_dip", "little_tip"),
         }
+
+        # Keep a clear OPEN/CLOSED decision while allowing natural finger
+        # curvature and camera perspective. The existing _classify() still
+        # uses its original logic and is not changed here.
+        states = {name: score >= 0.67 for name, score in scores.items()}
+
         palm_size = cls._distance(lm["wrist"], lm["middle_mcp"])
-        thumb_straight = cls._angle(lm["thumb_mp"], lm["thumb_ip"], lm["thumb_tip"]) > 145.0
-        thumb_reach = cls._distance(lm["thumb_tip"], lm["thumb_cmc"]) > cls._distance(lm["thumb_mp"], lm["thumb_cmc"]) * 1.10
-        thumb_spread = cls._distance(lm["thumb_tip"], lm["index_mcp"]) > palm_size * 0.32
-        states["thumb"] = thumb_straight and thumb_reach and thumb_spread
+        thumb_angle = cls._angle(lm["thumb_mp"], lm["thumb_ip"], lm["thumb_tip"])
+        thumb_straight = cls._clamp01((thumb_angle - 125.0) / 35.0)
+        thumb_reach = cls._clamp01(
+            (
+                cls._distance(lm["thumb_tip"], lm["thumb_cmc"])
+                / max(cls._distance(lm["thumb_mp"], lm["thumb_cmc"]), 1e-6)
+                - 1.02
+            ) / 0.16
+        )
+        thumb_spread = cls._clamp01(
+            (cls._distance(lm["thumb_tip"], lm["index_mcp"]) / max(palm_size, 1e-6) - 0.22) / 0.24
+        )
+        thumb_score = 0.50 * thumb_straight + 0.30 * thumb_reach + 0.20 * thumb_spread
+        states["thumb"] = thumb_score >= 0.66
+
         return states
 
     @classmethod
