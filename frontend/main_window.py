@@ -1,6 +1,7 @@
 import sys
 
 import cv2
+import numpy as np
 from PySide6.QtCore import QTimer, Qt, QElapsedTimer
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
@@ -13,6 +14,31 @@ from frontend.canvas import Canvas
 
 class MainWindow(QMainWindow):
     COUNTDOWN_SECONDS = 6
+
+    # Exact display colors requested for each finger, converted to OpenCV BGR.
+    FINGER_COLORS = {
+        "index": (255, 102, 0),    # #0066FF
+        "middle": (0, 212, 255),   # #FFD400
+        "pinky": (217, 184, 0),    # #00B8D9
+        "thumb": (75, 86, 140),    # #8C564B
+        "ring": (140, 62, 232),    # #E83E8C
+    }
+
+    FINGER_LABELS = {
+        "index": "Index",
+        "middle": "Middle",
+        "pinky": "Pinky",
+        "thumb": "Thumb",
+        "ring": "Ring",
+    }
+
+    FINGER_JOINTS = {
+        "index": ("index_mcp", "index_pip", "index_dip", "index_tip"),
+        "middle": ("middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
+        "ring": ("ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
+        "pinky": ("little_mcp", "little_pip", "little_dip", "little_tip"),
+        "thumb": ("thumb_cmc", "thumb_mp", "thumb_ip", "thumb_tip"),
+    }
 
     def __init__(self):
         super().__init__()
@@ -45,6 +71,64 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(16)
         self.showFullScreen()
+
+    def _draw_finger_overlay(self, frame):
+        """Render the five independent finger groups over the live frame."""
+        landmarks = self.gesture.get_finger_landmarks()
+        states = self.gesture.get_finger_states()
+        if not landmarks:
+            return
+
+        height, width = frame.shape[:2]
+
+        for finger, joint_names in self.FINGER_JOINTS.items():
+            points = []
+            for name in joint_names:
+                point = landmarks.get(name)
+                if point is None:
+                    continue
+                x = int(np.clip(float(point[0]) * width, 0, width - 1))
+                y = int(np.clip(float(point[1]) * height, 0, height - 1))
+                points.append((x, y))
+
+            if len(points) < 2:
+                continue
+
+            color = self.FINGER_COLORS[finger]
+            for start, end in zip(points, points[1:]):
+                cv2.line(frame, start, end, color, 7, cv2.LINE_AA)
+
+            for point in points:
+                cv2.circle(frame, point, 8, color, -1, cv2.LINE_AA)
+                cv2.circle(frame, point, 10, (255, 255, 255), 2, cv2.LINE_AA)
+
+            tip_x, tip_y = points[-1]
+            label = self.FINGER_LABELS[finger]
+            state = "OPEN" if states and states.get(finger, False) else "CLOSED"
+            label_text = f"{label}  {state}"
+
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.62
+            thickness = 2
+            (text_w, text_h), baseline = cv2.getTextSize(label_text, font, scale, thickness)
+            pad_x, pad_y = 10, 8
+
+            box_x1 = max(4, min(width - text_w - pad_x * 2 - 4, tip_x - text_w // 2 - pad_x))
+            box_y2 = max(text_h + baseline + pad_y + 4, tip_y - 14)
+            box_y1 = box_y2 - text_h - baseline - pad_y * 2
+            box_x2 = box_x1 + text_w + pad_x * 2
+
+            cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), color, -1, cv2.LINE_AA)
+            cv2.putText(
+                frame,
+                label_text,
+                (box_x1 + pad_x, box_y2 - pad_y - baseline),
+                font,
+                scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA,
+            )
 
     def _update_countdown_label(self):
         elapsed_ms = self.countdown_timer.elapsed()
@@ -90,6 +174,7 @@ class MainWindow(QMainWindow):
             if hand_box is not None:
                 x1, y1, x2, y2 = hand_box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 255), 3)
+            self._draw_finger_overlay(frame)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             height, width, channels = rgb.shape
             image = QImage(rgb.data, width, height, channels * width, QImage.Format.Format_RGB888).copy()
@@ -137,6 +222,9 @@ class MainWindow(QMainWindow):
             self.invisible = False
 
         output = self.invisibility.apply(frame, self.invisible) if self.background_captured else frame
+        # Draw the finger groups after the invisibility composite so the
+        # recognition overlay remains visible and crisp.
+        self._draw_finger_overlay(output)
         rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         height, width, channels = rgb.shape
         bytes_per_line = channels * width
