@@ -44,6 +44,17 @@ class HandGestureDetector:
         self.lock_alpha = 0.18
         self.min_confidence = 0.35
 
+        # Internal finger identities. These colors are identifiers only and
+        # are never rendered into the camera feed.
+        self.finger_colors = {
+            "index": "#0066FF",
+            "middle": "#FFD400",
+            "pinky": "#00B8D9",
+            "thumb": "#8C564B",
+            "ring": "#E83E8C",
+        }
+        self.last_open_finger = None
+
     @staticmethod
     def _distance(a, b):
         return float(np.linalg.norm(np.asarray(a, dtype=np.float32) - np.asarray(b, dtype=np.float32)))
@@ -76,6 +87,21 @@ class HandGestureDetector:
         )
         close = cls._distance(lm[tip], wrist) < cls._distance(lm[mcp], wrist) * 1.35
         return bent and close
+
+    @classmethod
+    def _finger_states(cls, lm):
+        states = {
+            "index": cls._finger_extended(lm, "index_mcp", "index_pip", "index_dip", "index_tip"),
+            "middle": cls._finger_extended(lm, "middle_mcp", "middle_pip", "middle_dip", "middle_tip"),
+            "ring": cls._finger_extended(lm, "ring_mcp", "ring_pip", "ring_dip", "ring_tip"),
+            "pinky": cls._finger_extended(lm, "little_mcp", "little_pip", "little_dip", "little_tip"),
+        }
+        palm_size = cls._distance(lm["wrist"], lm["middle_mcp"])
+        thumb_straight = cls._angle(lm["thumb_mp"], lm["thumb_ip"], lm["thumb_tip"]) > 145.0
+        thumb_reach = cls._distance(lm["thumb_tip"], lm["thumb_cmc"]) > cls._distance(lm["thumb_mp"], lm["thumb_cmc"]) * 1.10
+        thumb_spread = cls._distance(lm["thumb_tip"], lm["index_mcp"]) > palm_size * 0.32
+        states["thumb"] = thumb_straight and thumb_reach and thumb_spread
+        return states
 
     @classmethod
     def _classify(cls, lm):
@@ -180,6 +206,7 @@ class HandGestureDetector:
     def detect_hand_state(self, frame_bgr, locked_center=None):
         observations = self._request_points(frame_bgr)
         if not observations:
+            self.last_open_finger = None
             return None, False, False, False, locked_center
 
         height, width = frame_bgr.shape[:2]
@@ -230,8 +257,14 @@ class HandGestureDetector:
             self.locked_center = selected_center
 
         _, _, box, landmarks, _ = selected
+        states = self._finger_states(landmarks)
+        open_fingers = [name for name, is_open in states.items() if is_open]
+        self.last_open_finger = open_fingers[0] if len(open_fingers) == 1 else None
         is_open, is_fist, is_l = self._classify(landmarks)
         return box, is_fist, is_l, True, selected_center
+
+    def get_open_finger(self):
+        return self.last_open_finger
 
     def detect_hand_box(self, frame_bgr):
         box, _, _, found, _ = self.detect_hand_state(frame_bgr, self.locked_center)
